@@ -1,38 +1,8 @@
 <!DOCTYPE html>
 <!--
-  Wave Interference Simulator
-  ===========================
-  An interactive physics tool for exploring wave interference,
-  diffraction, and optical coherence in the browser.
-
-  Features
-  --------
-  · Point sources and plane-wave emitters (up to 6 total)
-  · Barrier walls with configurable slits (Young's / single / multi)
-  · Huygens–Fresnel diffraction — plane waves become circular at slits
-  · 14 real-world light sources with accurate coherence physics
-  · Spectral colour mixing: each source rendered in its true wavelength
-    colour (CIE approximation) and additively mixed on screen
-  · Live analysis: fringe spacing, Michelson visibility, OPD, phase
-    difference, fringe order — all computed in real time from the field
-  · Intensity profile plot with 5 scan modes (H/V/Diagonal/Radial/Circular)
-  · 10 colour maps, 5 fringe transfer functions, gamma, damping, grid snap
-
-  Physics model
-  -------------
-  · Scalar wave superposition (phasor sum)
-  · Coherence modelled via Gaussian OPD envelope: exp(-(OPD/L_c)^2)
-  · Huygens secondary sources placed at each slit opening
-  · Ray-casting wall occlusion: isPathBlocked() traces source→pixel rays
-
-  No build step. No dependencies. Single self-contained HTML file.
-
-  Controls
-  --------
-  · Drag source markers or walls on the canvas
-  · Click empty canvas space to teleport the selected source
-  · All parameters are editable in the right-hand control panel
-  · Presets tab for quick-start configurations
+  Wave Interference Simulator — WebGL edition
+  GPU fragment shader replaces the per-pixel CPU loop.
+  All UI, controls, presets and interaction are unchanged.
 -->
 <html lang="en">
 <head>
@@ -41,8 +11,6 @@
   <title>Wave Interference Simulator</title>
   <style>
     @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@800&display=swap');
-
-    /* ── Design tokens ─────────────────────────────────────────── */
     :root {
       --bg:     #040709;
       --panel:  #07101c;
@@ -55,8 +23,6 @@
       --green:  #7fff00;
       --amber:  #ffaa00;
     }
-
-    /* ── Reset ─────────────────────────────────────────────────── */
     *, *::before, *::after {
       margin: 0; padding: 0; box-sizing: border-box;
       -webkit-tap-highlight-color: transparent;
@@ -68,17 +34,12 @@
       font-family: 'JetBrains Mono', monospace;
       font-size: 11px; color: var(--text);
     }
-
-    /* ── Layout shell ──────────────────────────────────────────── */
     #main     { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
     #canvases { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
-
     @media (min-width: 700px) {
       #main       { flex-direction: row; }
       #ctrl-panel { width: 268px; border-top: none !important; border-left: 1px solid var(--border); }
     }
-
-    /* ── Header ────────────────────────────────────────────────── */
     #hdr {
       flex-shrink: 0; height: 36px;
       display: flex; align-items: center; justify-content: space-between;
@@ -90,8 +51,6 @@
       color: var(--accent); letter-spacing: -0.3px; white-space: nowrap;
     }
     .hdr-btns { display: flex; gap: 3px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
-
-    /* ── Buttons ───────────────────────────────────────────────── */
     .btn {
       font-family: 'JetBrains Mono', monospace; font-size: 9px;
       padding: 3px 7px; border-radius: 3px; cursor: pointer;
@@ -105,25 +64,21 @@
     .btn.danger:active  { background: var(--red); color: #000; }
     .btn.warn           { border-color: var(--amber); }
     .btn.warn.on        { background: var(--amber); color: #000; }
-
-    /* ── Main canvas ───────────────────────────────────────────── */
     #cwrap {
       flex: 1; min-height: 0; position: relative;
       background: #000; overflow: hidden;
     }
-    #c { display: block; width: 100%; height: 100%; touch-action: none; }
-
+    #cgl { display: block; width: 100%; height: 100%; position: absolute; top:0; left:0; }
+    #c   { display: block; width: 100%; height: 100%; position: absolute; top:0; left:0; touch-action: none; }
     #cursor-hud {
       position: absolute; top: 5px; left: 7px;
       font-size: 8px; color: rgba(255,255,255,0.22);
-      pointer-events: none; line-height: 1.7;
+      pointer-events: none; line-height: 1.7; z-index: 2;
     }
     #fps {
       position: absolute; top: 5px; right: 7px;
-      font-size: 8px; color: rgba(255,255,255,0.14); pointer-events: none;
+      font-size: 8px; color: rgba(255,255,255,0.14); pointer-events: none; z-index: 2;
     }
-
-    /* ── Profile strip ─────────────────────────────────────────── */
     #pwrap {
       flex-shrink: 0; height: 88px; background: #000;
       border-top: 1px solid var(--border);
@@ -134,15 +89,11 @@
       position: absolute; top: 3px; right: 5px;
       font-size: 7px; color: rgba(255,255,255,0.18); pointer-events: none;
     }
-
-    /* ── Control panel ─────────────────────────────────────────── */
     #ctrl-panel {
       flex-shrink: 0; background: var(--panel);
       border-top: 1px solid var(--border);
       display: flex; flex-direction: column; overflow: hidden;
     }
-
-    /* ── Tabs ──────────────────────────────────────────────────── */
     #tab-bar {
       display: flex; flex-shrink: 0;
       border-bottom: 1px solid var(--border); background: var(--bg);
@@ -153,7 +104,6 @@
       border-bottom: 2px solid transparent; white-space: nowrap;
     }
     .tab.on { color: var(--accent); border-bottom-color: var(--accent); }
-
     #tab-content { flex: 1; min-height: 0; overflow: hidden; }
     .tpane {
       display: none; width: 100%; height: 100%;
@@ -161,12 +111,9 @@
       flex-direction: column; gap: 4px;
     }
     .tpane.on { display: flex; }
-
-    /* ── Control widgets ───────────────────────────────────────── */
     .row  { display: flex; align-items: center; gap: 5px; min-height: 19px; }
     .lbl  { font-size: 8px; color: var(--dim); flex-shrink: 0; width: 62px; }
     .val  { font-size: 8px; color: var(--bright); min-width: 38px; text-align: right; flex-shrink: 0; }
-
     input[type="range"] {
       flex: 1; -webkit-appearance: none; height: 3px;
       background: var(--dim); border-radius: 2px; outline: none; min-width: 0;
@@ -182,7 +129,6 @@
       font-size: 9px; padding: 3px 4px; border-radius: 3px;
       outline: none; min-width: 0;
     }
-
     .trow { display: flex; gap: 3px; flex-wrap: wrap; }
     .tog {
       font-family: 'JetBrains Mono', monospace; font-size: 8px;
@@ -191,11 +137,8 @@
       color: var(--dim); white-space: nowrap; transition: all 0.1s;
     }
     .tog.on { background: rgba(0,229,255,0.1); border-color: var(--accent); color: var(--accent); }
-
     .div   { height: 1px; background: var(--border); flex-shrink: 0; margin: 1px 0; }
     .swatch { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; border: 1px solid rgba(255,255,255,0.12); }
-
-    /* ── Source / wall item tabs ───────────────────────────────── */
     .itabs { display: flex; gap: 3px; flex-wrap: wrap; }
     .itab  {
       padding: 3px 7px; border-radius: 3px; font-size: 9px;
@@ -204,8 +147,6 @@
     }
     .itab.on   { color: #000; font-weight: 700; }
     .itab.off  { opacity: 0.3; }
-
-    /* ── Analysis data tiles ───────────────────────────────────── */
     .dgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 3px; }
     .dtile { background: var(--border); border-radius: 3px; padding: 3px 5px; display: flex; flex-direction: column; }
     .dtile-lbl { font-size: 7px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.4px; }
@@ -214,11 +155,7 @@
     .dtile.g .dtile-val { color: var(--green); }
     .dtile.y .dtile-val { color: var(--amber); }
     .dtile.p .dtile-val { color: #cc99ff; }
-
-    /* ── Preset grid ───────────────────────────────────────────── */
     .pgrid { display: grid; grid-template-columns: repeat(2,1fr); gap: 3px; }
-
-    /* ── Slit editor card ──────────────────────────────────────── */
     .slit-card {
       background: var(--border); border-radius: 3px;
       padding: 4px 5px; margin: 2px 0;
@@ -229,25 +166,22 @@
 </head>
 <body>
 
-<!-- ═══════════════════════════════════════════════════ HEADER -->
 <header id="hdr">
-  <h1>◎ WAVE INTERFERENCE</h1>
+  <h1>&#9675; WAVE INTERFERENCE</h1>
   <div class="hdr-btns">
-    <button class="btn"        id="b-pause">⏸ Pause</button>
-    <button class="btn"        id="b-freeze">❄ Freeze</button>
-    <button class="btn"        id="b-addpt">＋ Point</button>
-    <button class="btn"        id="b-addpw">＋ Plane</button>
-    <button class="btn warn"   id="b-addwall">＋ Wall</button>
-    <button class="btn danger" id="b-clear">✕ Clear</button>
+    <button class="btn"        id="b-pause">&#9208; Pause</button>
+    <button class="btn"        id="b-freeze">&#10052; Freeze</button>
+    <button class="btn"        id="b-addpt">&#65291; Point</button>
+    <button class="btn"        id="b-addpw">&#65291; Plane</button>
+    <button class="btn warn"   id="b-addwall">&#65291; Wall</button>
+    <button class="btn danger" id="b-clear">&#10005; Clear</button>
   </div>
 </header>
 
-<!-- ═══════════════════════════════════════════════════ MAIN -->
 <div id="main">
-
-  <!-- Canvas column -->
   <div id="canvases">
     <div id="cwrap">
+      <canvas id="cgl"></canvas>
       <canvas id="c"></canvas>
       <div id="cursor-hud">move mouse over pattern</div>
       <div id="fps"></div>
@@ -258,7 +192,6 @@
     </div>
   </div>
 
-  <!-- Control panel -->
   <div id="ctrl-panel">
     <div id="tab-bar">
       <div class="tab on"  data-t="scene">Scene</div>
@@ -268,7 +201,6 @@
     </div>
     <div id="tab-content">
 
-      <!-- ── SCENE: sources, walls, snap ───────────────────────── -->
       <div class="tpane on" id="pane-scene">
         <div class="itabs" id="src-tabs"></div>
         <div id="src-ctrl"></div>
@@ -277,7 +209,7 @@
         <div id="wall-ctrl"></div>
         <div class="div"></div>
         <div class="trow">
-          <button class="tog"    id="t-snap">⊞ Snap</button>
+          <button class="tog"    id="t-snap">&#8862; Snap</button>
           <button class="tog on" id="t-labels">Labels</button>
         </div>
         <div class="row">
@@ -287,11 +219,10 @@
         </div>
       </div>
 
-      <!-- ── DISPLAY: colour, fringe, physics ──────────────────── -->
       <div class="tpane" id="pane-display">
         <div class="row"><span class="lbl">Color map</span>
           <select id="sel-cmap">
-            <option value="spectral" selected>⚡ Spectral</option>
+            <option value="spectral" selected>Spectral</option>
             <option value="mono">Monochrome</option>
             <option value="laser">Laser green</option>
             <option value="red">Laser red</option>
@@ -304,7 +235,7 @@
           </select></div>
         <div class="row"><span class="lbl">Fringes</span>
           <select id="sel-style">
-            <option value="sharp">Sharp (cosⁿ)</option>
+            <option value="sharp">Sharp (cosn)</option>
             <option value="cos">Cosine</option>
             <option value="binary">Binary</option>
             <option value="grating">Grating</option>
@@ -334,20 +265,18 @@
         </div>
       </div>
 
-      <!-- ── ANALYSIS: live metrics + profile controls ──────────── -->
       <div class="tpane" id="pane-analysis">
         <div class="dgrid">
-          <div class="dtile">  <span class="dtile-lbl">Fringe spacing</span><span class="dtile-val" id="d-fs">—</span><span class="dtile-unit">pixels</span></div>
-          <div class="dtile g"><span class="dtile-lbl">Visibility V</span>  <span class="dtile-val" id="d-vis">—</span><span class="dtile-unit">(Imax−Imin)/(Imax+Imin)</span></div>
-          <div class="dtile y"><span class="dtile-lbl">Path diff ΔL</span>  <span class="dtile-val" id="d-opd">—</span><span class="dtile-unit">px @ cursor</span></div>
-          <div class="dtile p"><span class="dtile-lbl">Phase diff Δφ</span> <span class="dtile-val" id="d-phi">—</span><span class="dtile-unit">° @ cursor</span></div>
-          <div class="dtile">  <span class="dtile-lbl">Intensity</span>     <span class="dtile-val" id="d-I">—</span>  <span class="dtile-unit">0–1 @ cursor</span></div>
-          <div class="dtile g"><span class="dtile-lbl">Fringe order</span>  <span class="dtile-val" id="d-ord">—</span><span class="dtile-unit">ΔL/λ @ cursor</span></div>
-          <div class="dtile y"><span class="dtile-lbl">Coh. length</span>   <span class="dtile-val" id="d-lc">—</span> <span class="dtile-unit">pixels</span></div>
-          <div class="dtile p"><span class="dtile-lbl">Sources</span>        <span class="dtile-val" id="d-n">—</span>  <span class="dtile-unit">active</span></div>
+          <div class="dtile">  <span class="dtile-lbl">Fringe spacing</span><span class="dtile-val" id="d-fs">-</span><span class="dtile-unit">pixels</span></div>
+          <div class="dtile g"><span class="dtile-lbl">Visibility V</span>  <span class="dtile-val" id="d-vis">-</span><span class="dtile-unit">(Imax-Imin)/(Imax+Imin)</span></div>
+          <div class="dtile y"><span class="dtile-lbl">Path diff dL</span>  <span class="dtile-val" id="d-opd">-</span><span class="dtile-unit">px @ cursor</span></div>
+          <div class="dtile p"><span class="dtile-lbl">Phase diff dp</span> <span class="dtile-val" id="d-phi">-</span><span class="dtile-unit">deg @ cursor</span></div>
+          <div class="dtile">  <span class="dtile-lbl">Intensity</span>     <span class="dtile-val" id="d-I">-</span>  <span class="dtile-unit">0-1 @ cursor</span></div>
+          <div class="dtile g"><span class="dtile-lbl">Fringe order</span>  <span class="dtile-val" id="d-ord">-</span><span class="dtile-unit">dL/lam @ cursor</span></div>
+          <div class="dtile y"><span class="dtile-lbl">Coh. length</span>   <span class="dtile-val" id="d-lc">-</span> <span class="dtile-unit">pixels</span></div>
+          <div class="dtile p"><span class="dtile-lbl">Sources</span>        <span class="dtile-val" id="d-n">-</span>  <span class="dtile-unit">active</span></div>
         </div>
         <div class="div"></div>
-        <!-- Profile plot mode selector -->
         <div class="trow" id="prof-modes">
           <button class="tog on" data-m="horiz">H-slice</button>
           <button class="tog"    data-m="vert">V-slice</button>
@@ -374,1213 +303,599 @@
         </div>
       </div>
 
-      <!-- ── PRESETS ───────────────────────────────────────────── -->
       <div class="tpane" id="pane-presets">
         <div class="pgrid" id="pgrid"></div>
       </div>
 
-    </div><!-- /tab-content -->
-  </div><!-- /ctrl-panel -->
-</div><!-- /main -->
+    </div>
+  </div>
+</div>
+
 <script>
 'use strict';
 
-// ─────────────────────────────────────────────────────────────
-// LIGHT SOURCE DATABASE
-//
-// Each entry represents a real-world illumination source.
-//   coh  — coherence factor 0–1 (1 = perfect, e.g. laser)
-//   wlPx — wavelength in canvas pixels (sets fringe spacing)
-//   wlNm — physical wavelength in nm (for spectral RGB colour)
-// ─────────────────────────────────────────────────────────────
+// ─── LIGHT SOURCE DATABASE ────────────────────────────────────
 const LIGHT_SOURCES = [
-  { id:'custom',       name:'Custom',             coh:1.00, wlPx:52, wlNm:550, desc:'Fully adjustable — use the Wavelength slider' },
-  { id:'laser_red',    name:'Red laser 633nm',    coh:1.00, wlPx:80, wlNm:633, desc:'HeNe laser — perfectly monochromatic, very long coherence' },
-  { id:'laser_green',  name:'Green laser 532nm',  coh:1.00, wlPx:65, wlNm:532, desc:'DPSS laser — sharp fringes, long coherence length' },
-  { id:'laser_blue',   name:'Blue laser 445nm',   coh:1.00, wlPx:54, wlNm:445, desc:'Diode laser — monochromatic blue' },
-  { id:'laser_violet', name:'Violet laser 405nm', coh:1.00, wlPx:48, wlNm:405, desc:'Short-wavelength diode — tightest fringes' },
-  { id:'mercury_546',  name:'Mercury 546nm',      coh:0.85, wlPx:66, wlNm:546, desc:'Hg green line — nearly monochromatic, classic spectroscopy' },
-  { id:'mercury_436',  name:'Mercury 436nm',      coh:0.80, wlPx:52, wlNm:436, desc:'Hg blue-violet line — narrow spectral line' },
-  { id:'sodium_589',   name:'Sodium lamp 589nm',  coh:0.60, wlPx:73, wlNm:589, desc:'Na D-lines — amber yellow, moderate coherence' },
-  { id:'led_red',      name:'Red LED 625nm',      coh:0.35, wlPx:78, wlNm:625, desc:'Narrowband red LED — partial coherence' },
-  { id:'led_green',    name:'Green LED 525nm',    coh:0.30, wlPx:64, wlNm:525, desc:'Narrowband green LED — partial coherence' },
-  { id:'led_white',    name:'White LED',          coh:0.12, wlPx:55, wlNm:550, desc:'Broad spectrum — fringes wash out quickly' },
-  { id:'fluoro',       name:'Fluorescent tube',   coh:0.08, wlPx:58, wlNm:550, desc:'Mercury phosphor mix — poor coherence' },
-  { id:'incandescent', name:'Incandescent bulb',  coh:0.04, wlPx:62, wlNm:600, desc:'Blackbody spectrum — almost no fringes' },
-  { id:'sunlight',     name:'Sunlight',           coh:0.02, wlPx:56, wlNm:550, desc:'Broadest spectrum — coherence length ~1 µm' },
+  { id:'custom',       name:'Custom',             coh:1.00, wlPx:52, wlNm:550, desc:'Fully adjustable - use the Wavelength slider' },
+  { id:'laser_red',    name:'Red laser 633nm',    coh:1.00, wlPx:80, wlNm:633, desc:'HeNe laser - perfectly monochromatic, very long coherence' },
+  { id:'laser_green',  name:'Green laser 532nm',  coh:1.00, wlPx:65, wlNm:532, desc:'DPSS laser - sharp fringes, long coherence length' },
+  { id:'laser_blue',   name:'Blue laser 445nm',   coh:1.00, wlPx:54, wlNm:445, desc:'Diode laser - monochromatic blue' },
+  { id:'laser_violet', name:'Violet laser 405nm', coh:1.00, wlPx:48, wlNm:405, desc:'Short-wavelength diode - tightest fringes' },
+  { id:'mercury_546',  name:'Mercury 546nm',      coh:0.85, wlPx:66, wlNm:546, desc:'Hg green line - nearly monochromatic, classic spectroscopy' },
+  { id:'mercury_436',  name:'Mercury 436nm',      coh:0.80, wlPx:52, wlNm:436, desc:'Hg blue-violet line - narrow spectral line' },
+  { id:'sodium_589',   name:'Sodium lamp 589nm',  coh:0.60, wlPx:73, wlNm:589, desc:'Na D-lines - amber yellow, moderate coherence' },
+  { id:'led_red',      name:'Red LED 625nm',      coh:0.35, wlPx:78, wlNm:625, desc:'Narrowband red LED - partial coherence' },
+  { id:'led_green',    name:'Green LED 525nm',    coh:0.30, wlPx:64, wlNm:525, desc:'Narrowband green LED - partial coherence' },
+  { id:'led_white',    name:'White LED',          coh:0.12, wlPx:55, wlNm:550, desc:'Broad spectrum - fringes wash out quickly' },
+  { id:'fluoro',       name:'Fluorescent tube',   coh:0.08, wlPx:58, wlNm:550, desc:'Mercury phosphor mix - poor coherence' },
+  { id:'incandescent', name:'Incandescent bulb',  coh:0.04, wlPx:62, wlNm:600, desc:'Blackbody spectrum - almost no fringes' },
+  { id:'sunlight',     name:'Sunlight',           coh:0.02, wlPx:56, wlNm:550, desc:'Broadest spectrum - coherence length ~1 um' },
 ];
-
-/** Returns the LIGHT_SOURCES record for a source object. */
 const getLightSource = (src) => LIGHT_SOURCES.find(l => l.id === src.lightSrc) || LIGHT_SOURCES[0];
 
-
-// ─────────────────────────────────────────────────────────────
-// SPECTRAL COLOUR
-//
-// Converts a physical wavelength (nm) to linear RGB [0..1]
-// using a piecewise CIE colour-matching approximation with
-// a sensitivity roll-off at the edges of the visible band.
-// ─────────────────────────────────────────────────────────────
-
-/** @returns {[number,number,number]} linear RGB, each in [0,1] */
+// ─── SPECTRAL COLOUR (CPU side, for overlays/profile) ─────────
 function wavelengthToRGB(nm) {
-  let r = 0, g = 0, b = 0;
-  if      (nm >= 380 && nm < 440) { r = (440 - nm) / 60;  b = 1; }
-  else if (nm >= 440 && nm < 490) { g = (nm - 440) / 50;  b = 1; }
-  else if (nm >= 490 && nm < 510) { g = 1; b = (510 - nm) / 20; }
-  else if (nm >= 510 && nm < 580) { r = (nm - 510) / 70;  g = 1; }
-  else if (nm >= 580 && nm < 645) { r = 1; g = (645 - nm) / 65; }
-  else if (nm >= 645 && nm <= 780){ r = 1; }
-
-  let s = 1;
-  if      (nm >= 380 && nm < 420) s = 0.3 + 0.7 * (nm - 380) / 40;
-  else if (nm  > 700 && nm <= 780) s = 0.3 + 0.7 * (780 - nm) / 80;
-
-  const γ = 0.8;
-  return [r>0 ? Math.pow(r*s,γ) : 0, g>0 ? Math.pow(g*s,γ) : 0, b>0 ? Math.pow(b*s,γ) : 0];
+  let r=0,g=0,b=0;
+  if      (nm>=380&&nm<440){r=(440-nm)/60;b=1;}
+  else if (nm>=440&&nm<490){g=(nm-440)/50;b=1;}
+  else if (nm>=490&&nm<510){g=1;b=(510-nm)/20;}
+  else if (nm>=510&&nm<580){r=(nm-510)/70;g=1;}
+  else if (nm>=580&&nm<645){r=1;g=(645-nm)/65;}
+  else if (nm>=645&&nm<=780){r=1;}
+  let s=1;
+  if      (nm>=380&&nm<420) s=0.3+0.7*(nm-380)/40;
+  else if (nm>700&&nm<=780) s=0.3+0.7*(780-nm)/80;
+  const gm=0.8;
+  return [r>0?Math.pow(r*s,gm):0, g>0?Math.pow(g*s,gm):0, b>0?Math.pow(b*s,gm):0];
 }
-
-/** Returns the display RGB triple [0..1] for a source. */
 function srcRGB(src) {
-  const ls = getLightSource(src);
-  if (ls.id === 'custom') {
-    const h = src.color.replace('#','');
-    return [parseInt(h.slice(0,2),16)/255, parseInt(h.slice(2,4),16)/255, parseInt(h.slice(4,6),16)/255];
-  }
+  const ls=getLightSource(src);
+  if(ls.id==='custom'){const h=src.color.replace('#','');return[parseInt(h.slice(0,2),16)/255,parseInt(h.slice(2,4),16)/255,parseInt(h.slice(4,6),16)/255];}
   return wavelengthToRGB(ls.wlNm);
 }
+function srcCSS(src,boost=60){const[r,g,b]=srcRGB(src);return`rgb(${Math.min(255,(r*255+boost))|0},${Math.min(255,(g*255+boost))|0},${Math.min(255,(b*255+boost))|0})`;}
 
-/** Brightened CSS rgb() string for canvas marker overlays. */
-function srcCSS(src, boost=60) {
-  const [r,g,b] = srcRGB(src);
-  return `rgb(${Math.min(255,(r*255+boost))|0},${Math.min(255,(g*255+boost))|0},${Math.min(255,(b*255+boost))|0})`;
-}
+// ─── STATE ────────────────────────────────────────────────────
+const glCanvas  = document.getElementById('cgl');
+const canvas    = document.getElementById('c');
+const ctx       = canvas.getContext('2d');
+const pcanvas   = document.getElementById('pc');
+const pctx      = pcanvas.getContext('2d');
 
-
-// ─────────────────────────────────────────────────────────────
-// CANVAS & SIMULATION STATE
-// ─────────────────────────────────────────────────────────────
-const canvas  = document.getElementById('c');
-const ctx     = canvas.getContext('2d');
-const pcanvas = document.getElementById('pc');
-const pctx    = pcanvas.getContext('2d');
-
-let W=0, H=0, PW=0, PH=0, imgData=null;
+let W=0,H=0,PW=0,PH=0;
 let simTime=0, paused=false, frozen=false;
 let lastFrame=performance.now(), fpsEst=60, frameCount=0;
-const TAU = Math.PI * 2;
+const TAU=Math.PI*2;
 
-// Display settings
 let colorMap='spectral', fringeStyle='sharp', sharpness=6, wavelength=52;
 let brightness=1, bgLevel=0.05, gamma=1, speed=0.8, damping=0;
 let superpos='phasor';
-
-// Overlay flags
 let showLabels=true, showGrid=true, showRings=false, showNulls=false, invertImg=false;
-
-// Grid snap
 let snapOn=false, snapSz=30;
-
-// Profile strip
 let profMode='horiz', profPos=0.5, profColor='cyan';
 let showProfLine=true, showProfFill=true, showProfGrid=false;
-
-// Cursor (for analysis)
 let curX=0, curY=0, curOnCanvas=false;
 
-// Sources
-const SRC_COLORS = ['#00e5ff','#ff3d7f','#7fff00','#ffaa00','#cc66ff','#ff8800'];
-const SRC_NAMES  = ['S1','S2','S3','S4','S5','S6'];
+const SRC_COLORS=['#00e5ff','#ff3d7f','#7fff00','#ffaa00','#cc66ff','#ff8800'];
+const SRC_NAMES =['S1','S2','S3','S4','S5','S6'];
 let sources=[], selSrc=0;
-
-// Walls
 let walls=[], selWall=0, editWalls=false;
-
-// Huygens secondary sources (rebuilt every frame from slit geometry)
 let huygSrcs=[];
 
+// ─── FACTORIES ────────────────────────────────────────────────
+function mkPoint(x,y,i){return{type:'point',x,y,amp:1,phase:0,enabled:true,waveform:'sine',lightSrc:'custom',color:SRC_COLORS[i%6],name:SRC_NAMES[i%6]};}
+function mkPlane(i){return{type:'plane',cx:W*0.5,cy:H*0.5,angle:0,side:'right',amp:1,phase:0,enabled:true,waveform:'sine',lightSrc:'custom',color:SRC_COLORS[i%6],name:SRC_NAMES[i%6]};}
+function mkWall(){return{xFrac:0.5,angle:0,thick:4,enabled:true,name:'W'+(walls.length+1),slits:[{pos:0.40,width:20},{pos:0.60,width:20}]};}
 
-// ─────────────────────────────────────────────────────────────
-// FACTORIES
-// ─────────────────────────────────────────────────────────────
-
-function mkPoint(x, y, i) {
-  return { type:'point', x, y, amp:1, phase:0, enabled:true,
-           waveform:'sine', lightSrc:'custom',
-           color:SRC_COLORS[i%6], name:SRC_NAMES[i%6] };
-}
-
-function mkPlane(i) {
-  return { type:'plane', cx:W*0.5, cy:H*0.5, angle:0, side:'right',
-           amp:1, phase:0, enabled:true, waveform:'sine',
-           lightSrc:'custom', color:SRC_COLORS[i%6], name:SRC_NAMES[i%6] };
-}
-
-/**
- * A wall is a line across the canvas at horizontal fraction xFrac,
- * optionally rotated by `angle` degrees. Slits are gaps in the line
- * defined by { pos: 0..1 along wall, width: pixels }.
- */
-function mkWall() {
-  return { xFrac:0.5, angle:0, thick:4, enabled:true,
-           name:'W'+(walls.length+1),
-           slits:[{pos:0.40,width:20},{pos:0.60,width:20}] };
-}
-
-
-// ─────────────────────────────────────────────────────────────
-// COLOUR MAPS  (intensity t ∈ [0,1] → [r,g,b] 0–255)
-// ─────────────────────────────────────────────────────────────
-function cmap(t, m) {
-  t = Math.max(0, Math.min(1, t));
-  const v = (t*255)|0;
-  switch(m) {
-    case 'mono':     return [v, v, v];
-    case 'laser':    return [0, v, 0];
-    case 'red':      return [v, 0, 0];
-    case 'blue':     return [0, (v*0.3)|0, v];
-    case 'false':    return hsl(t*0.75, 1, 0.5);
-    case 'spectrum': return hsl((1-t)*0.75, 0.95, 0.5);
-    case 'fire':     return [(Math.min(1,t*1.8)*255)|0, (Math.max(0,(t-0.4)*1.6)*255)|0, 0];
-    case 'ice':      return [(t*60)|0, (t*150)|0, Math.min(255,t*255+40)|0];
-    case 'gold':     return [v, (t*190)|0, (t*60)|0];
-    default:         return [v, v, v];
+// ─── CPU WAVE HELPERS (for analysis + profile strip) ──────────
+function osc(form,phi){
+  switch(form){
+    case 'square':return Math.sin(phi)>=0?1:-1;
+    case 'saw':{const p=((phi%TAU)+TAU)%TAU;return p/Math.PI-1;}
+    case 'tri':{const p=((phi%TAU)+TAU)%TAU;return p<Math.PI?(p/Math.PI)*2-1:1-(p-Math.PI)/Math.PI*2;}
+    default:return Math.sin(phi);
   }
 }
-function hsl(h, s, l) {
-  if (!s) { const v=(l*255)|0; return [v,v,v]; }
-  const q = l<0.5 ? l*(1+s) : l+s-l*s, p = 2*l-q;
-  return [hc(p,q,h+1/3), hc(p,q,h), hc(p,q,h-1/3)].map(v=>(v*255)|0);
-}
-function hc(p, q, t) {
-  if(t<0)t+=1; if(t>1)t-=1;
-  if(t<1/6)return p+(q-p)*6*t;
-  if(t<0.5)return q;
-  if(t<2/3)return p+(q-p)*(2/3-t)*6;
-  return p;
-}
-
-
-// ─────────────────────────────────────────────────────────────
-// WAVEFORMS  (phase → amplitude [-1, 1])
-// ─────────────────────────────────────────────────────────────
-function osc(form, phi) {
-  switch(form) {
-    case 'square': return Math.sin(phi) >= 0 ? 1 : -1;
-    case 'saw': { const p=((phi%TAU)+TAU)%TAU; return p/Math.PI-1; }
-    case 'tri': { const p=((phi%TAU)+TAU)%TAU; return p<Math.PI ? (p/Math.PI)*2-1 : 1-(p-Math.PI)/Math.PI*2; }
-    default: return Math.sin(phi);
+function fringe(v,style,sh){
+  switch(style){
+    case 'cos':return Math.cos(v*Math.PI)*0.5+0.5;
+    case 'sharp':{const c=Math.cos(v*Math.PI)*0.5+0.5;return Math.pow(c,sh);}
+    case 'binary':return Math.cos(v*Math.PI)>0?1:0;
+    case 'grating':{const s=Math.sin(v*Math.PI);return Math.pow(s*s,sh*0.5);}
+    case 'gauss':{const w=((v%2)+2)%2-1;return Math.exp(-w*w*sh*2);}
+    default:return Math.cos(v*Math.PI)*0.5+0.5;
   }
 }
-
-
-// ─────────────────────────────────────────────────────────────
-// FRINGE TRANSFER FUNCTION  (amplitude → display intensity)
-//
-// Maps the summed wave amplitude to a brightness value.
-// Different styles change how constructive/destructive nodes look.
-// ─────────────────────────────────────────────────────────────
-function fringe(v, style, sh) {
-  switch(style) {
-    case 'cos':     return Math.cos(v*Math.PI)*0.5+0.5;
-    case 'sharp': { const c=Math.cos(v*Math.PI)*0.5+0.5; return Math.pow(c,sh); }
-    case 'binary':  return Math.cos(v*Math.PI)>0 ? 1 : 0;
-    case 'grating': { const s=Math.sin(v*Math.PI); return Math.pow(s*s, sh*0.5); }
-    case 'gauss':  { const w=((v%2)+2)%2-1; return Math.exp(-w*w*sh*2); }
-    default:        return Math.cos(v*Math.PI)*0.5+0.5;
-  }
-}
-
-
-// ─────────────────────────────────────────────────────────────
-// WALL GEOMETRY
-//
-// Convention: the wall normal points in direction (cos θ, sin θ)
-// where θ = wall.angle * π/180. The signed normal distance of a
-// point from the wall plane is positive on the "right" side.
-// ─────────────────────────────────────────────────────────────
-
-/** Signed normal distance from wall plane (+ve = right side). */
-function wallNorm(wall, x, y) {
-  const a = wall.angle * Math.PI/180;
-  return (x - wall.xFrac*W)*Math.cos(a) + (y - H/2)*Math.sin(a);
-}
-
-/** Normalised position along the wall's length axis (0..1). */
-function wallProj(wall, x, y) {
-  const a = wall.angle * Math.PI/180;
-  const lx = -Math.sin(a), ly = Math.cos(a);
-  const L  = Math.hypot(W, H);
-  return ((x - wall.xFrac*W)*lx + (y - H/2)*ly + L/2) / L;
-}
-
-/** True if the given wall-projection fraction falls inside any slit. */
-function inSlit(wall, frac) {
-  const L = Math.hypot(W, H);
-  for (const sl of wall.slits) {
-    const hw = (sl.width/2) / L;
-    if (frac >= sl.pos-hw && frac <= sl.pos+hw) return true;
+function wallNorm(wall,x,y){const a=wall.angle*Math.PI/180;return(x-wall.xFrac*W)*Math.cos(a)+(y-H/2)*Math.sin(a);}
+function wallProj(wall,x,y){const a=wall.angle*Math.PI/180,lx=-Math.sin(a),ly=Math.cos(a),L=Math.hypot(W,H);return((x-wall.xFrac*W)*lx+(y-H/2)*ly+L/2)/L;}
+function inSlit(wall,frac){const L=Math.hypot(W,H);for(const sl of wall.slits){const hw=(sl.width/2)/L;if(frac>=sl.pos-hw&&frac<=sl.pos+hw)return true;}return false;}
+function isBlocked(x,y){for(const w of walls){if(!w.enabled)continue;if(Math.abs(wallNorm(w,x,y))>w.thick/2)continue;if(!inSlit(w,wallProj(w,x,y)))return true;}return false;}
+function isPathBlocked(sx,sy,px,py){
+  for(const w of walls){
+    if(!w.enabled)continue;
+    const ss=wallNorm(w,sx,sy),ps=wallNorm(w,px,py);
+    if(ss*ps>=0)continue;
+    const a=w.angle*Math.PI/180,nx=Math.cos(a),ny=Math.sin(a);
+    const d=(px-sx)*nx+(py-sy)*ny;
+    if(Math.abs(d)<1e-6)continue;
+    const t=((w.xFrac*W-sx)*nx+(H/2-sy)*ny)/d;
+    if(t<0||t>1)continue;
+    if(!inSlit(w,wallProj(w,sx+t*(px-sx),sy+t*(py-sy))))return true;
   }
   return false;
 }
-
-/** True if pixel (x,y) is inside a solid (non-slit) wall segment. */
-function isBlocked(x, y) {
-  for (const w of walls) {
-    if (!w.enabled) continue;
-    if (Math.abs(wallNorm(w,x,y)) > w.thick/2) continue;
-    if (!inSlit(w, wallProj(w,x,y))) return true;
-  }
-  return false;
-}
-
-/**
- * True if a wall blocks the straight-line path from (sx,sy) to (px,py).
- * They must be on opposite sides of the wall, and the crossing point
- * must not be through a slit.
- */
-function isPathBlocked(sx, sy, px, py) {
-  for (const w of walls) {
-    if (!w.enabled) continue;
-    const ss = wallNorm(w,sx,sy), ps = wallNorm(w,px,py);
-    if (ss*ps >= 0) continue; // same side — not blocked
-
-    const a  = w.angle * Math.PI/180;
-    const nx = Math.cos(a), ny = Math.sin(a);
-    const d  = (px-sx)*nx + (py-sy)*ny;
-    if (Math.abs(d) < 1e-6) continue;
-
-    const t  = ((w.xFrac*W-sx)*nx + (H/2-sy)*ny) / d;
-    if (t<0 || t>1) continue;
-
-    if (!inSlit(w, wallProj(w, sx+t*(px-sx), sy+t*(py-sy)))) return true;
-  }
-  return false;
-}
-
-
-// ─────────────────────────────────────────────────────────────
-// HUYGENS–FRESNEL DIFFRACTION
-//
-// Each slit is replaced by a row of point sources that re-emit
-// the wave with the phase it had when it arrived at the slit.
-// This produces physically correct circular diffraction patterns.
-// ─────────────────────────────────────────────────────────────
-
-/** Wave phase of source `s` at world position (x,y). */
-function wavePhase(s, x, y, k, omega, t) {
-  if (s.type === 'point') {
-    return k * (Math.hypot(x-s.x, y-s.y)+1e-5) - omega*t*60 + s.phase*Math.PI/180;
-  }
-  if (s.type === 'plane') {
-    const a = s.angle*Math.PI/180;
-    return k * (Math.abs((x-s.cx)*Math.cos(a)+(y-s.cy)*Math.sin(a))+1e-5) - omega*t*60 + s.phase*Math.PI/180;
-  }
+function srcPos(s){return(s.type==='point'||s.type==='huygen')?{x:s.x,y:s.y}:{x:s.cx,y:s.cy};}
+function pathLen(s,x,y){if(s.type==='plane'){const a=s.angle*Math.PI/180;return Math.abs((x-s.cx)*Math.cos(a)+(y-s.cy)*Math.sin(a));}return Math.hypot(x-s.x,y-s.y)+1e-5;}
+function srcField(s,x,y,k,omega,t){
+  if(!s.enabled)return 0;
+  const damp=r=>damping>0?Math.exp(-r*damping):1;
+  if(s.type==='point'||s.type==='huygen'){const r=Math.hypot(x-s.x,y-s.y)+1e-5;return s.amp*damp(r)*osc(s.waveform,k*r-omega*t*60+s.phase*Math.PI/180);}
+  if(s.type==='plane'){const a=s.angle*Math.PI/180,nx=Math.cos(a),ny=Math.sin(a),d=(x-s.cx)*nx+(y-s.cy)*ny;if(s.side==='right'&&d<0)return 0;if(s.side==='left'&&d>0)return 0;const r=Math.abs(d)+1e-5;return s.amp*damp(r)*osc(s.waveform,k*r-omega*t*60+s.phase*Math.PI/180);}
   return 0;
 }
-
-/**
- * Rebuilds huygSrcs from slit geometry. Called once per frame.
- * @param {object[]} eSrc - enabled primary sources
- */
-function buildHuygens(eSrc, k, omega) {
-  huygSrcs = [];
-  for (const w of walls) {
-    if (!w.enabled) continue;
-    const a   = w.angle * Math.PI/180;
-    const wx  = w.xFrac * W;
-    const L   = Math.hypot(W, H);
-    const lx  = -Math.sin(a), ly = Math.cos(a);
-
-    // Determine forward (transmission) side from source positions
-    const avgSide = eSrc.reduce((s,src) => s + wallNorm(w, srcPos(src).x, srcPos(src).y), 0);
-    const fwd     = avgSide < 0 ? 1 : -1;
-
-    for (const sl of w.slits) {
-      const n      = Math.max(3, Math.round(sl.width/8));
-      const centOff = (sl.pos - 0.5) * L;
-
-      for (let p=0; p<n; p++) {
-        const off = n===1 ? 0 : (p/(n-1)-0.5) * sl.width;
-        const hx  = wx + lx*(centOff+off);
-        const hy  = H/2 + ly*(centOff+off);
-
-        // Inherit properties from the dominant incoming source
-        let amp=0, waveform='sine', lightSrc='custom', color='#ffffff', phase=0;
-        for (const s of eSrc) {
-          const f = srcField(s, hx, hy, k, omega, simTime);
-          if (Math.abs(f) > Math.abs(amp)) {
-            amp=s.amp*0.7; waveform=s.waveform; lightSrc=s.lightSrc; color=s.color;
-          }
-          phase += wavePhase(s, hx, hy, k, omega, simTime);
+function wavePhase(s,x,y,k,omega,t){
+  if(s.type==='point')return k*(Math.hypot(x-s.x,y-s.y)+1e-5)-omega*t*60+s.phase*Math.PI/180;
+  if(s.type==='plane'){const a=s.angle*Math.PI/180;return k*(Math.abs((x-s.cx)*Math.cos(a)+(y-s.cy)*Math.sin(a))+1e-5)-omega*t*60+s.phase*Math.PI/180;}
+  return 0;
+}
+function buildHuygens(eSrc,k,omega){
+  huygSrcs=[];
+  for(const w of walls){
+    if(!w.enabled)continue;
+    const a=w.angle*Math.PI/180,wx=w.xFrac*W,L=Math.hypot(W,H),lx=-Math.sin(a),ly=Math.cos(a);
+    const avgSide=eSrc.reduce((s,src)=>s+wallNorm(w,srcPos(src).x,srcPos(src).y),0);
+    const fwd=avgSide<0?1:-1;
+    for(const sl of w.slits){
+      const n=Math.max(3,Math.round(sl.width/8)),centOff=(sl.pos-0.5)*L;
+      for(let p=0;p<n;p++){
+        const off=n===1?0:(p/(n-1)-0.5)*sl.width;
+        const hx=wx+lx*(centOff+off),hy=H/2+ly*(centOff+off);
+        let amp=0,waveform='sine',lightSrc='custom',color='#ffffff',phase=0;
+        for(const s of eSrc){
+          const f=srcField(s,hx,hy,k,omega,simTime);
+          if(Math.abs(f)>Math.abs(amp)){amp=s.amp*0.7;waveform=s.waveform;lightSrc=s.lightSrc;color=s.color;}
+          phase+=wavePhase(s,hx,hy,k,omega,simTime);
         }
-        phase /= Math.max(1, eSrc.length);
-
-        huygSrcs.push({
-          type:'huygen', x:hx, y:hy,
-          amp: amp/n, phase: phase*(180/Math.PI),
-          waveform, lightSrc, color, enabled:true,
-          wallRef:w, fwd,
-        });
+        phase/=Math.max(1,eSrc.length);
+        huygSrcs.push({type:'huygen',x:hx,y:hy,amp:amp/n,phase:phase*(180/Math.PI),waveform,lightSrc,color,enabled:true,wallRef:w,fwd});
       }
     }
   }
 }
-
-
-// ─────────────────────────────────────────────────────────────
-// WAVE FIELD
-// ─────────────────────────────────────────────────────────────
-
-/** 2D position of a source's handle (point or plane centre). */
-function srcPos(s) {
-  return (s.type==='point'||s.type==='huygen') ? {x:s.x,y:s.y} : {x:s.cx,y:s.cy};
+function fieldAt(x,y,eSrc,k,omega,t){
+  if(isBlocked(x,y))return 0;
+  let amp=0,n=0;
+  for(const s of eSrc){const p=srcPos(s);if(isPathBlocked(p.x,p.y,x,y))continue;amp+=srcField(s,x,y,k,omega,t);n++;}
+  for(const hs of huygSrcs){if(wallNorm(hs.wallRef,x,y)*hs.fwd<0)continue;amp+=srcField(hs,x,y,k,omega,t);n++;}
+  const N=Math.max(1,n);
+  if(superpos==='phasor'){
+    const active=[...eSrc.filter(s=>{const p=srcPos(s);return!isPathBlocked(p.x,p.y,x,y);}),...huygSrcs];
+    let maxOPD=0;
+    if(active.length>=2){const r0=pathLen(active[0],x,y);for(let i=1;i<Math.min(active.length,4);i++)maxOPD=Math.max(maxOPD,Math.abs(r0-pathLen(active[i],x,y)));}
+    const ls=getLightSource(eSrc[0]||{lightSrc:'custom'});
+    const Lc=(wavelength/(1-ls.coh+0.001))*0.5;
+    const env=ls.coh>=1?1:Math.exp(-((maxOPD/Lc)*(maxOPD/Lc)));
+    const I=bgLevel+(1-bgLevel)*(0.5*(1-env)+fringe(amp/N,fringeStyle,sharpness)*env);
+    return Math.max(0,Math.min(1,I*brightness));
+  }
+  return Math.max(0,Math.min(1,(bgLevel+(1-bgLevel)*fringe(amp/N,fringeStyle,sharpness))*brightness));
 }
 
-/** Optical path length from source to (x,y). */
-function pathLen(s, x, y) {
-  if (s.type==='plane') {
-    const a=s.angle*Math.PI/180;
-    return Math.abs((x-s.cx)*Math.cos(a)+(y-s.cy)*Math.sin(a));
-  }
-  return Math.hypot(x-s.x, y-s.y) + 1e-5;
+// ─── WEBGL SETUP ──────────────────────────────────────────────
+let gl, glProg, glUniforms={};
+const MAX_SRCS=48, MAX_WALLS=4;
+
+const VERT_SRC=`attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0.0,1.0);}`;
+
+const FRAG_SRC=`
+precision highp float;
+uniform vec2  u_res;
+uniform float u_time;
+uniform float u_wavelength;
+uniform float u_brightness;
+uniform float u_bgLevel;
+uniform float u_gamma;
+uniform float u_damping;
+uniform float u_sharpness;
+uniform int   u_colorMap;
+uniform int   u_fringeStyle;
+uniform int   u_superpos;
+uniform bool  u_invert;
+uniform float u_coh;
+uniform int   u_nSrc;
+uniform vec4  u_srcA[48];
+uniform vec4  u_srcB[48];
+uniform vec4  u_srcC[48];
+uniform int   u_nHuyg;
+uniform int   u_nWall;
+uniform vec4  u_wallA[4];
+uniform vec4  u_slitData[16];
+uniform int   u_slitCount[4];
+const float PI=3.14159265358979;
+const float TAU=6.28318530717959;
+
+float wallNorm(vec4 wA,vec2 p){float wx=wA.x*u_res.x;float a=wA.y;return(p.x-wx)*cos(a)+(p.y-u_res.y*0.5)*sin(a);}
+float wallProj(vec4 wA,vec2 p){float wx=wA.x*u_res.x;float a=wA.y;float lx=-sin(a),ly=cos(a);float L=length(u_res);return((p.x-wx)*lx+(p.y-u_res.y*0.5)*ly+L*0.5)/L;}
+
+bool inSlit(int wi,float frac){
+  int base=wi*4;
+  for(int si=0;si<4;si++){if(si>=u_slitCount[wi])break;vec4 sl=u_slitData[base+si];if(frac>=sl.x-sl.y&&frac<=sl.x+sl.y)return true;}
+  return false;
 }
 
-/** Field amplitude of a single source at (x,y). */
-function srcField(s, x, y, k, omega, t) {
-  if (!s.enabled) return 0;
-  const damp = r => damping>0 ? Math.exp(-r*damping) : 1;
-  if (s.type==='point' || s.type==='huygen') {
-    const r = Math.hypot(x-s.x, y-s.y)+1e-5;
-    return s.amp * damp(r) * osc(s.waveform, k*r - omega*t*60 + s.phase*Math.PI/180);
-  }
-  if (s.type==='plane') {
-    const a  = s.angle*Math.PI/180;
-    const nx = Math.cos(a), ny = Math.sin(a);
-    const d  = (x-s.cx)*nx + (y-s.cy)*ny;
-    if (s.side==='right' && d<0) return 0;
-    if (s.side==='left'  && d>0) return 0;
-    const r = Math.abs(d)+1e-5;
-    return s.amp * damp(r) * osc(s.waveform, k*r - omega*t*60 + s.phase*Math.PI/180);
-  }
-  return 0;
+bool isBlocked(vec2 p){
+  for(int wi=0;wi<4;wi++){if(wi>=u_nWall)break;vec4 wA=u_wallA[wi];if(wA.w<0.5)continue;if(abs(wallNorm(wA,p))>wA.z*0.5)continue;if(!inSlit(wi,wallProj(wA,p)))return true;}
+  return false;
 }
 
-/**
- * Computes display intensity at pixel (x,y) with wall occlusion.
- *
- * Occlusion rules:
- *   - Pixels inside solid wall → 0 (dark)
- *   - Direct sources blocked by wall ray-cast → excluded
- *   - Huygens sources only radiate toward the transmission side
- *
- * Coherence: fringes are modulated by exp(-(OPD/L_c)^2)
- * so low-coherence sources produce fringes that fade with path difference.
- */
-function fieldAt(x, y, eSrc, k, omega, t) {
-  if (isBlocked(x, y)) return 0;
-
-  let amp=0, n=0;
-
-  for (const s of eSrc) {
-    const p = srcPos(s);
-    if (isPathBlocked(p.x,p.y,x,y)) continue;
-    amp += srcField(s,x,y,k,omega,t);
-    n++;
+bool isPathBlocked(vec2 s,vec2 p){
+  for(int wi=0;wi<4;wi++){
+    if(wi>=u_nWall)break;
+    vec4 wA=u_wallA[wi];if(wA.w<0.5)continue;
+    float ss=wallNorm(wA,s),ps=wallNorm(wA,p);if(ss*ps>=0.0)continue;
+    float a=wA.y;vec2 n=vec2(cos(a),sin(a));float d=dot(p-s,n);if(abs(d)<1e-6)continue;
+    float wx=wA.x*u_res.x;float t=(dot(vec2(wx,u_res.y*0.5)-s,n))/d;if(t<0.0||t>1.0)continue;
+    if(!inSlit(wi,wallProj(wA,s+t*(p-s))))return true;
   }
+  return false;
+}
 
-  for (const hs of huygSrcs) {
-    if (wallNorm(hs.wallRef,x,y) * hs.fwd < 0) continue; // wrong side
-    amp += srcField(hs,x,y,k,omega,t);
-    n++;
-  }
+float srcFieldAt(int i,vec2 p,float k,float omega){
+  vec4 sA=u_srcA[i];vec4 sB=u_srcB[i];
+  int tp=int(sA.x+0.5);float amp=sA.w,phase=sB.x,angle=sB.y,side=sB.z;
+  float dmp=1.0;
+  if(tp==0||tp==2){vec2 sp=sA.yz;float r=length(p-sp)+1e-5;if(u_damping>0.0)dmp=exp(-r*u_damping);return amp*dmp*sin(k*r-omega*u_time*60.0+phase);}
+  else{vec2 cn=sA.yz;vec2 nv=vec2(cos(angle),sin(angle));float d=dot(p-cn,nv);if(side<-0.5&&d<0.0)return 0.0;if(side>0.5&&d>0.0)return 0.0;float r=abs(d)+1e-5;if(u_damping>0.0)dmp=exp(-r*u_damping);return amp*dmp*sin(k*r-omega*u_time*60.0+phase);}
+}
 
-  const N = Math.max(1, n);
+float pathLenAt(int i,vec2 p){
+  vec4 sA=u_srcA[i];int tp=int(sA.x+0.5);
+  if(tp==1){float angle=u_srcB[i].y;vec2 cn=sA.yz;vec2 nv=vec2(cos(angle),sin(angle));return abs(dot(p-cn,nv));}
+  return length(p-sA.yz)+1e-5;
+}
 
-  if (superpos === 'phasor') {
-    // Coherence envelope
-    const active = [...eSrc.filter(s=>{const p=srcPos(s);return !isPathBlocked(p.x,p.y,x,y);}), ...huygSrcs];
-    let maxOPD = 0;
-    if (active.length >= 2) {
-      const r0 = pathLen(active[0],x,y);
-      for (let i=1; i<Math.min(active.length,4); i++) maxOPD = Math.max(maxOPD, Math.abs(r0-pathLen(active[i],x,y)));
+float fringeF(float v){
+  if(u_fringeStyle==0){float c=cos(v*PI)*0.5+0.5;return pow(c,u_sharpness);}
+  if(u_fringeStyle==1)return cos(v*PI)*0.5+0.5;
+  if(u_fringeStyle==2)return cos(v*PI)>0.0?1.0:0.0;
+  if(u_fringeStyle==3){float s=sin(v*PI);return pow(s*s,u_sharpness*0.5);}
+  if(u_fringeStyle==4){float w=mod(mod(v,2.0)+2.0,2.0)-1.0;return exp(-w*w*u_sharpness*2.0);}
+  return cos(v*PI)*0.5+0.5;
+}
+
+vec3 hsl2rgb(float h,float s,float l){
+  float q=l<0.5?l*(1.0+s):l+s-l*s,p=2.0*l-q;
+  vec3 c;
+  for(int i=0;i<3;i++){float t=h+(i==0?1.0/3.0:(i==1?0.0:-1.0/3.0));if(t<0.0)t+=1.0;if(t>1.0)t-=1.0;float v;if(t<1.0/6.0)v=p+(q-p)*6.0*t;else if(t<0.5)v=q;else if(t<2.0/3.0)v=p+(q-p)*(2.0/3.0-t)*6.0;else v=p;if(i==0)c.r=v;else if(i==1)c.g=v;else c.b=v;}
+  return c;
+}
+
+vec3 applyColorMap(float I){
+  if(u_colorMap==1)return vec3(I,I,I);
+  if(u_colorMap==2)return vec3(0.0,I,0.0);
+  if(u_colorMap==3)return vec3(I,0.0,0.0);
+  if(u_colorMap==4)return vec3(0.0,I*0.3,I);
+  if(u_colorMap==5)return hsl2rgb(I*0.75,1.0,0.5);
+  if(u_colorMap==6)return hsl2rgb((1.0-I)*0.75,0.95,0.5);
+  if(u_colorMap==7)return vec3(min(1.0,I*1.8),max(0.0,(I-0.4)*1.6),0.0);
+  if(u_colorMap==8)return vec3(I*60.0/255.0,I*150.0/255.0,min(1.0,I+40.0/255.0));
+  if(u_colorMap==9)return vec3(I,I*190.0/255.0,I*60.0/255.0);
+  return vec3(I,I,I);
+}
+
+void main(){
+  vec2 p=gl_FragCoord.xy;p.y=u_res.y-p.y;
+  if(isBlocked(p)){gl_FragColor=vec4(0.0,0.0,0.0,1.0);return;}
+  float k=TAU/u_wavelength,omega=k;
+
+  if(u_colorMap==0){
+    vec3 col=vec3(0.0);
+    for(int i=0;i<48;i++){
+      if(i>=u_nSrc)break;
+      vec4 sA=u_srcA[i];vec4 sB=u_srcB[i];vec4 sC=u_srcC[i];
+      int tp=int(sA.x+0.5);bool blocked;
+      if(tp==2){float fwd=sC.w;int wi=int(sB.w+0.5);blocked=(wi>=0&&wi<4)?wallNorm(u_wallA[wi],p)*fwd<0.0:false;}
+      else{blocked=isPathBlocked(sA.yz,p);}
+      if(blocked)continue;
+      float ki=TAU/sB.w;float f=srcFieldAt(i,p,ki,ki);
+      float I=max(0.0,min(1.0,(u_bgLevel+(1.0-u_bgLevel)*fringeF(f))*u_brightness*sA.w));
+      col+=sC.rgb*I;
     }
-    const ls  = getLightSource(eSrc[0]||{lightSrc:'custom'});
-    const Lc  = (wavelength/(1-ls.coh+0.001))*0.5;
-    const env = ls.coh>=1 ? 1 : Math.exp(-((maxOPD/Lc)*(maxOPD/Lc)));
-    const I   = bgLevel + (1-bgLevel)*(0.5*(1-env) + fringe(amp/N,fringeStyle,sharpness)*env);
-    return Math.max(0, Math.min(1, I*brightness));
+    float mx=max(max(col.r,col.g),max(col.b,1.0));
+    if(u_gamma!=1.0)col=pow(col/mx,vec3(1.0/u_gamma))*mx;
+    if(u_invert)col=vec3(1.0)-col/mx;else col=min(col,vec3(1.0));
+    gl_FragColor=vec4(col,1.0);return;
   }
 
-  return Math.max(0, Math.min(1, (bgLevel+(1-bgLevel)*fringe(amp/N,fringeStyle,sharpness))*brightness));
-}
+  float amp=0.0;int n=0;
+  for(int i=0;i<48;i++){
+    if(i>=u_nSrc)break;
+    vec4 sA=u_srcA[i];int tp=int(sA.x+0.5);bool blocked;
+    if(tp==2){float fwd=u_srcC[i].w;int wi=int(u_srcB[i].w+0.5);blocked=(wi>=0&&wi<4)?wallNorm(u_wallA[wi],p)*fwd<0.0:false;}
+    else{blocked=isPathBlocked(sA.yz,p);}
+    if(blocked)continue;amp+=srcFieldAt(i,p,k,omega);n++;
+  }
 
-/**
- * Computes an RGB pixel for spectral mode.
- * Each source contributes in its own wavelength colour; they add as light.
- */
-function spectralAt(x, y, eSrc, omega, t) {
-  if (isBlocked(x, y)) return [0,0,0];
-  let R=0, G=0, B=0;
-
-  const addSrc = (s, blocked) => {
-    if (blocked) return;
-    const ls  = getLightSource(s);
-    const k   = TAU / (ls.id==='custom' ? wavelength : ls.wlPx);
-    const f   = srcField(s,x,y,k,omega,t);
-    const I   = Math.max(0, Math.min(1, (bgLevel+(1-bgLevel)*fringe(f,fringeStyle,sharpness))*brightness*s.amp));
-    const [r,g,b] = srcRGB(s);
-    R+=r*I; G+=g*I; B+=b*I;
-  };
-
-  for (const s  of eSrc)     addSrc(s,  isPathBlocked(srcPos(s).x, srcPos(s).y, x, y));
-  for (const hs of huygSrcs) addSrc(hs, wallNorm(hs.wallRef,x,y)*hs.fwd < 0);
-
-  const mx = Math.max(R,G,B,1);
-  if (gamma!==1) { R=Math.pow(R/mx,1/gamma)*mx; G=Math.pow(G/mx,1/gamma)*mx; B=Math.pow(B/mx,1/gamma)*mx; }
-  if (invertImg) return [Math.min(255,(1-R/mx)*255)|0, Math.min(255,(1-G/mx)*255)|0, Math.min(255,(1-B/mx)*255)|0];
-  return [Math.min(255,R*255)|0, Math.min(255,G*255)|0, Math.min(255,B*255)|0];
-}
-
-
-// ─────────────────────────────────────────────────────────────
-// SNAP
-// ─────────────────────────────────────────────────────────────
-const snap = v => snapOn ? Math.round(v/snapSz)*snapSz : v;
-
-
-// ─────────────────────────────────────────────────────────────
-// LIVE ANALYSIS
-//
-// Samples the field along the horizontal centreline to compute
-// fringe spacing and Michelson visibility, then reads
-// cursor-position values for path difference and phase.
-// ─────────────────────────────────────────────────────────────
-function updateAnalysis(eSrc, k, omega) {
-  document.getElementById('d-n').textContent = String(eSrc.length);
-
-  const ls  = getLightSource(eSrc[0]||{lightSrc:'custom'});
-  const Lc  = ls.coh>=1 ? '∞' : ((wavelength/(1-ls.coh+0.001))*0.5).toFixed(1);
-  document.getElementById('d-lc').textContent = String(Lc);
-
-  // Sample along centreline
-  const row = [];
-  for (let x=0; x<W; x+=2) row.push(fieldAt(x, H/2, eSrc, k, omega, simTime));
-
-  // Peak detection → fringe spacing
-  const peaks = [];
-  for (let i=1; i<row.length-1; i++)
-    if (row[i]>row[i-1] && row[i]>row[i+1] && row[i]>0.5) peaks.push(i*2);
-  if (peaks.length >= 2) {
-    const avg = peaks.slice(1).reduce((s,p,i)=>s+(p-peaks[i]),0) / (peaks.length-1);
-    document.getElementById('d-fs').textContent = avg.toFixed(1);
+  float N=max(1.0,float(n));float I;
+  if(u_superpos==0){
+    float r0=0.0;bool got0=false;float maxOPD=0.0;
+    for(int i=0;i<48;i++){
+      if(i>=u_nSrc)break;vec4 sA=u_srcA[i];int tp=int(sA.x+0.5);if(tp==2)continue;
+      if(isPathBlocked(sA.yz,p))continue;
+      float r=pathLenAt(i,p);if(!got0){r0=r;got0=true;}else maxOPD=max(maxOPD,abs(r0-r));if(i>=3)break;
+    }
+    float Lc=(u_wavelength/(1.0-u_coh+0.001))*0.5;
+    float env=(u_coh>=1.0)?1.0:exp(-pow(maxOPD/Lc,2.0));
+    I=u_bgLevel+(1.0-u_bgLevel)*(0.5*(1.0-env)+fringeF(amp/N)*env);
+    I=max(0.0,min(1.0,I*u_brightness));
   } else {
-    document.getElementById('d-fs').textContent = '—';
+    I=max(0.0,min(1.0,(u_bgLevel+(1.0-u_bgLevel)*fringeF(amp/N))*u_brightness));
   }
+  if(u_gamma!=1.0)I=pow(I,1.0/u_gamma);if(u_invert)I=1.0-I;
+  gl_FragColor=vec4(applyColorMap(I),1.0);
+}`;
 
-  // Michelson visibility
-  const Mx=Math.max(...row), Mn=Math.min(...row);
-  document.getElementById('d-vis').textContent = (Mx+Mn)>0 ? ((Mx-Mn)/(Mx+Mn)).toFixed(3) : '—';
-
-  // Cursor measurements
-  if (curOnCanvas && eSrc.length >= 1) {
-    const paths = eSrc.map(s=>pathLen(s,curX,curY));
-    const opd   = paths.length>=2 ? Math.abs(paths[0]-paths[1]) : null;
-    document.getElementById('d-opd').textContent = opd!==null ? opd.toFixed(1) : '—';
-    document.getElementById('d-phi').textContent = opd!==null ? ((opd/wavelength*360)%360).toFixed(1) : '—';
-    document.getElementById('d-ord').textContent = opd!==null ? (opd/wavelength).toFixed(2) : '—';
-    document.getElementById('d-I').textContent   = fieldAt(curX,curY,eSrc,k,omega,simTime).toFixed(3);
-  } else {
-    ['d-opd','d-phi','d-ord','d-I'].forEach(id => document.getElementById(id).textContent='hover canvas');
-  }
+function compileShader(gl,type,src){
+  const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error('Shader:',gl.getShaderInfoLog(s));return null;}
+  return s;
 }
 
+function initGL(){
+  gl=glCanvas.getContext('webgl',{antialias:false,depth:false,alpha:false});
+  if(!gl){console.error('No WebGL');return false;}
+  const vert=compileShader(gl,gl.VERTEX_SHADER,VERT_SRC);
+  const frag=compileShader(gl,gl.FRAGMENT_SHADER,FRAG_SRC);
+  if(!vert||!frag)return false;
+  glProg=gl.createProgram();gl.attachShader(glProg,vert);gl.attachShader(glProg,frag);gl.linkProgram(glProg);
+  if(!gl.getProgramParameter(glProg,gl.LINK_STATUS)){console.error('Link:',gl.getProgramInfoLog(glProg));return false;}
+  gl.useProgram(glProg);
+  const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
+  const loc=gl.getAttribLocation(glProg,'a_pos');gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+  const unis=['u_res','u_time','u_wavelength','u_brightness','u_bgLevel','u_gamma','u_damping','u_sharpness','u_colorMap','u_fringeStyle','u_superpos','u_invert','u_coh','u_nSrc','u_nHuyg','u_nWall'];
+  for(const u of unis)glUniforms[u]=gl.getUniformLocation(glProg,u);
+  for(let i=0;i<MAX_SRCS;i++){glUniforms['sA'+i]=gl.getUniformLocation(glProg,`u_srcA[${i}]`);glUniforms['sB'+i]=gl.getUniformLocation(glProg,`u_srcB[${i}]`);glUniforms['sC'+i]=gl.getUniformLocation(glProg,`u_srcC[${i}]`);}
+  for(let i=0;i<MAX_WALLS;i++){glUniforms['wA'+i]=gl.getUniformLocation(glProg,`u_wallA[${i}]`);glUniforms['sc'+i]=gl.getUniformLocation(glProg,`u_slitCount[${i}]`);for(let s=0;s<4;s++)glUniforms['sd'+(i*4+s)]=gl.getUniformLocation(glProg,`u_slitData[${i*4+s}]`);}
+  return true;
+}
 
-// ─────────────────────────────────────────────────────────────
-// MAIN RENDER LOOP
-// ─────────────────────────────────────────────────────────────
-function render() {
-  const now = performance.now();
-  const dt  = (now - lastFrame) / 1000;
-  lastFrame = now;
-  fpsEst    = fpsEst*0.94 + (1/dt)*0.06;
-  document.getElementById('fps').textContent = fpsEst.toFixed(0)+' fps';
-  if (!paused && !frozen) simTime += dt * speed;
+const CMAP_ID={spectral:0,mono:1,laser:2,red:3,blue:4,false:5,spectrum:6,fire:7,ice:8,gold:9};
+const FRINGE_ID={sharp:0,cos:1,binary:2,grating:3,gauss:4};
+const SUPERPOS_ID={phasor:0,incoherent:1,product:2,max:3};
 
-  const k = TAU/wavelength, omega = k;
-  const eSrc = sources.filter(s=>s.enabled);
-  buildHuygens(eSrc, k, omega);
-
-  // ── Pixel rendering ────────────────────────────────────────
-  const px = imgData.data;
-  for (let y=0; y<H; y++) {
-    for (let x=0; x<W; x++) {
-      const i = (y*W+x)*4;
-      if (colorMap === 'spectral') {
-        const [r,g,b] = spectralAt(x,y,eSrc,omega,simTime);
-        px[i]=r; px[i+1]=g; px[i+2]=b;
-      } else {
-        let I = fieldAt(x,y,eSrc,k,omega,simTime);
-        if (gamma!==1)  I = Math.pow(I, 1/gamma);
-        if (invertImg)  I = 1-I;
-        const [r,g,b] = cmap(I, colorMap);
-        px[i]=r; px[i+1]=g; px[i+2]=b;
-      }
-      px[i+3]=255;
+function uploadUniforms(eSrc){
+  const u=glUniforms;
+  gl.uniform2f(u.u_res,W,H);gl.uniform1f(u.u_time,simTime);gl.uniform1f(u.u_wavelength,wavelength);
+  gl.uniform1f(u.u_brightness,brightness);gl.uniform1f(u.u_bgLevel,bgLevel);gl.uniform1f(u.u_gamma,gamma);
+  gl.uniform1f(u.u_damping,damping);gl.uniform1f(u.u_sharpness,sharpness);
+  gl.uniform1i(u.u_colorMap,CMAP_ID[colorMap]??1);gl.uniform1i(u.u_fringeStyle,FRINGE_ID[fringeStyle]??0);
+  gl.uniform1i(u.u_superpos,SUPERPOS_ID[superpos]??0);gl.uniform1i(u.u_invert,invertImg?1:0);
+  const ls=getLightSource(eSrc[0]||{lightSrc:'custom'});gl.uniform1f(u.u_coh,ls.coh);
+  const allSrc=[...eSrc,...huygSrcs];const nSrc=Math.min(allSrc.length,MAX_SRCS);
+  gl.uniform1i(u.u_nSrc,nSrc);gl.uniform1i(u.u_nHuyg,eSrc.length);
+  for(let i=0;i<nSrc;i++){
+    const s=allSrc[i];const isHuyg=(i>=eSrc.length);
+    const typeId=s.type==='point'?0:s.type==='plane'?1:2;
+    const sx=s.type==='point'||s.type==='huygen'?s.x:s.cx;
+    const sy=s.type==='point'||s.type==='huygen'?s.y:s.cy;
+    const lsSrc=getLightSource(s);const wlPx=lsSrc.id==='custom'?wavelength:lsSrc.wlPx;
+    const sideV=s.type==='plane'?(s.side==='left'?1.0:s.side==='right'?-1.0:0.0):0.0;
+    const[r,gv,bv]=srcRGB(s);let wallIdx=-1;if(isHuyg)wallIdx=walls.indexOf(s.wallRef);
+    gl.uniform4f(u['sA'+i],typeId,sx,sy,s.amp);
+    if(isHuyg){gl.uniform4f(u['sB'+i],s.phase*Math.PI/180,0.0,0.0,wallIdx);gl.uniform4f(u['sC'+i],r,gv,bv,s.fwd||1.0);}
+    else{gl.uniform4f(u['sB'+i],s.phase*Math.PI/180,(s.angle||0)*Math.PI/180,sideV,wlPx);gl.uniform4f(u['sC'+i],r,gv,bv,lsSrc.wlNm);}
+  }
+  const nWall=Math.min(walls.length,MAX_WALLS);gl.uniform1i(u.u_nWall,nWall);
+  for(let wi=0;wi<nWall;wi++){
+    const w=walls[wi];const L=Math.hypot(W,H);
+    gl.uniform4f(u['wA'+wi],w.xFrac,w.angle*Math.PI/180,w.thick,w.enabled?1.0:0.0);
+    const nSlits=Math.min(w.slits.length,4);gl.uniform1i(u['sc'+wi],nSlits);
+    for(let si=0;si<4;si++){
+      if(si<nSlits){const sl=w.slits[si];gl.uniform4f(u['sd'+(wi*4+si)],sl.pos,(sl.width/2)/L,0,0);}
+      else{gl.uniform4f(u['sd'+(wi*4+si)],0,0,0,0);}
     }
   }
-  ctx.putImageData(imgData, 0, 0);
+}
 
-  // ── Canvas overlays ────────────────────────────────────────
+function renderGL(eSrc){
+  if(!gl)return;
+  gl.viewport(0,0,W,H);uploadUniforms(eSrc);gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+}
+
+// ─── SNAP ─────────────────────────────────────────────────────
+const snap=v=>snapOn?Math.round(v/snapSz)*snapSz:v;
+
+// ─── ANALYSIS ─────────────────────────────────────────────────
+function updateAnalysis(eSrc,k,omega){
+  document.getElementById('d-n').textContent=String(eSrc.length);
+  const ls=getLightSource(eSrc[0]||{lightSrc:'custom'});
+  const Lc=ls.coh>=1?'inf':((wavelength/(1-ls.coh+0.001))*0.5).toFixed(1);
+  document.getElementById('d-lc').textContent=String(Lc);
+  const row=[];for(let x=0;x<W;x+=2)row.push(fieldAt(x,H/2,eSrc,k,omega,simTime));
+  const peaks=[];for(let i=1;i<row.length-1;i++)if(row[i]>row[i-1]&&row[i]>row[i+1]&&row[i]>0.5)peaks.push(i*2);
+  if(peaks.length>=2){const avg=peaks.slice(1).reduce((s,p,i)=>s+(p-peaks[i]),0)/(peaks.length-1);document.getElementById('d-fs').textContent=avg.toFixed(1);}
+  else document.getElementById('d-fs').textContent='-';
+  const Mx=Math.max(...row),Mn=Math.min(...row);
+  document.getElementById('d-vis').textContent=(Mx+Mn)>0?((Mx-Mn)/(Mx+Mn)).toFixed(3):'-';
+  if(curOnCanvas&&eSrc.length>=1){
+    const paths=eSrc.map(s=>pathLen(s,curX,curY));const opd=paths.length>=2?Math.abs(paths[0]-paths[1]):null;
+    document.getElementById('d-opd').textContent=opd!==null?opd.toFixed(1):'-';
+    document.getElementById('d-phi').textContent=opd!==null?((opd/wavelength*360)%360).toFixed(1):'-';
+    document.getElementById('d-ord').textContent=opd!==null?(opd/wavelength).toFixed(2):'-';
+    document.getElementById('d-I').textContent=fieldAt(curX,curY,eSrc,k,omega,simTime).toFixed(3);
+  } else {['d-opd','d-phi','d-ord','d-I'].forEach(id=>document.getElementById(id).textContent='hover canvas');}
+}
+
+// ─── MAIN RENDER LOOP ─────────────────────────────────────────
+function render(){
+  const now=performance.now();const dt=(now-lastFrame)/1000;lastFrame=now;
+  fpsEst=fpsEst*0.94+(1/dt)*0.06;document.getElementById('fps').textContent=fpsEst.toFixed(0)+' fps';
+  if(!paused&&!frozen)simTime+=dt*speed;
+  const k=TAU/wavelength,omega=k;const eSrc=sources.filter(s=>s.enabled);
+  buildHuygens(eSrc,k,omega);
+  renderGL(eSrc);
+  ctx.clearRect(0,0,W,H);
   drawWalls();
-
-  if (showGrid) {
-    ctx.save();
-    ctx.strokeStyle='rgba(255,255,255,0.04)'; ctx.lineWidth=1;
-    for(let x=0;x<W;x+=snapSz){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}
-    for(let y=0;y<H;y+=snapSz){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}
-    ctx.restore();
-  }
-
-  if (showRings) {
-    ctx.save();
-    for (const s of eSrc) {
-      if (s.type!=='point') continue;
-      const col=srcCSS(s).replace('rgb(','rgba(').replace(')',',0.3)');
-      ctx.strokeStyle=col; ctx.lineWidth=0.5;
-      for(let r=wavelength/2; r<Math.hypot(W,H); r+=wavelength){ctx.beginPath();ctx.arc(s.x,s.y,r,0,TAU);ctx.stroke();}
-    }
-    ctx.restore();
-  }
-
-  if (showNulls && eSrc.length>=2) {
-    const id2=ctx.getImageData(0,0,W,H), d2=id2.data;
-    for(let y=0;y<H;y+=2) for(let x=0;x<W;x+=2) {
-      if (isBlocked(x,y)) continue;
-      let s=0;
-      for(const src of [...eSrc,...huygSrcs]) s+=srcField(src,x,y,k,omega,simTime);
-      if(Math.abs(s/Math.max(1,eSrc.length+huygSrcs.length))<0.08){
-        const ii=(y*W+x)*4; d2[ii]=d2[ii+1]=d2[ii+2]=25;
-        const ii2=((y+1)*W+x)*4; if(ii2<d2.length) d2[ii2]=d2[ii2+1]=d2[ii2+2]=25;
-      }
-    }
-    ctx.putImageData(id2,0,0);
-  }
-
-  if (showProfLine) drawScanIndicator();
-  if (showLabels)   drawSources();
-
-  if (curOnCanvas) {
-    const I = fieldAt(curX,curY,eSrc,k,omega,simTime);
-    document.getElementById('cursor-hud').textContent = `x=${curX.toFixed(0)}  y=${curY.toFixed(0)}  ·  I=${I.toFixed(3)}`;
-  }
-
-  frameCount++;
-  if (frameCount%12===0) updateAnalysis(eSrc, k, omega);
-
-  drawProfile(eSrc, k, omega);
-  requestAnimationFrame(render);
+  if(showGrid){ctx.save();ctx.strokeStyle='rgba(255,255,255,0.04)';ctx.lineWidth=1;for(let x=0;x<W;x+=snapSz){ctx.beginPath();ctx.moveTo(x,0);ctx.lineTo(x,H);ctx.stroke();}for(let y=0;y<H;y+=snapSz){ctx.beginPath();ctx.moveTo(0,y);ctx.lineTo(W,y);ctx.stroke();}ctx.restore();}
+  if(showRings){ctx.save();for(const s of eSrc){if(s.type!=='point')continue;const col=srcCSS(s).replace('rgb(','rgba(').replace(')',',0.3)');ctx.strokeStyle=col;ctx.lineWidth=0.5;for(let r=wavelength/2;r<Math.hypot(W,H);r+=wavelength){ctx.beginPath();ctx.arc(s.x,s.y,r,0,TAU);ctx.stroke();}}ctx.restore();}
+  if(showNulls&&eSrc.length>=2){for(let y=0;y<H;y+=2)for(let x=0;x<W;x+=2){if(isBlocked(x,y))continue;let s=0;for(const src of [...eSrc,...huygSrcs])s+=srcField(src,x,y,k,omega,simTime);if(Math.abs(s/Math.max(1,eSrc.length+huygSrcs.length))<0.08){ctx.fillStyle='rgba(25,25,25,0.7)';ctx.fillRect(x,y,2,2);}}}
+  if(showProfLine)drawScanIndicator();if(showLabels)drawSources();
+  if(curOnCanvas){const I=fieldAt(curX,curY,eSrc,k,omega,simTime);document.getElementById('cursor-hud').textContent=`x=${curX.toFixed(0)}  y=${curY.toFixed(0)}  I=${I.toFixed(3)}`;}
+  frameCount++;if(frameCount%12===0)updateAnalysis(eSrc,k,omega);
+  drawProfile(eSrc,k,omega);requestAnimationFrame(render);
 }
 
+// ─── DRAWING — WALLS ──────────────────────────────────────────
+function drawWalls(){
+  for(let wi=0;wi<walls.length;wi++){
+    const w=walls[wi];if(!w.enabled)continue;
+    const a=w.angle*Math.PI/180,wx=w.xFrac*W,L=Math.hypot(W,H),lx=-Math.sin(a),ly=Math.cos(a);
+    const sel=(wi===selWall&&editWalls);ctx.save();
+    ctx.strokeStyle=sel?'rgba(255,170,0,0.9)':'rgba(255,255,255,0.55)';ctx.lineWidth=w.thick;ctx.lineCap='butt';
+    const sorted=[...w.slits].sort((a,b)=>a.pos-b.pos);const segs=[];let prev=0;
+    for(const sl of sorted){const hw=(sl.width/2)/L;segs.push([prev,sl.pos-hw]);prev=sl.pos+hw;}segs.push([prev,1]);
+    for(const[t0,t1]of segs){if(t1<=t0)continue;ctx.beginPath();ctx.moveTo(wx+lx*(t0-0.5)*L,H/2+ly*(t0-0.5)*L);ctx.lineTo(wx+lx*(t1-0.5)*L,H/2+ly*(t1-0.5)*L);ctx.stroke();}
+    ctx.lineWidth=1;ctx.strokeStyle='rgba(127,255,0,0.6)';ctx.setLineDash([3,3]);
+    for(const sl of sorted){const hw=(sl.width/2)/L;ctx.beginPath();ctx.moveTo(wx+lx*(sl.pos-hw-0.5)*L,H/2+ly*(sl.pos-hw-0.5)*L);ctx.lineTo(wx+lx*(sl.pos+hw-0.5)*L,H/2+ly*(sl.pos+hw-0.5)*L);ctx.stroke();}
+    ctx.setLineDash([]);ctx.fillStyle=sel?'#ffaa00':'rgba(255,255,255,0.5)';ctx.font='bold 10px JetBrains Mono';ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(w.name,wx+16,H/2);ctx.restore();
+  }
+}
 
-// ─────────────────────────────────────────────────────────────
-// CANVAS DRAWING — WALLS
-// ─────────────────────────────────────────────────────────────
-function drawWalls() {
-  for (let wi=0; wi<walls.length; wi++) {
-    const w=walls[wi]; if(!w.enabled) continue;
-    const a=w.angle*Math.PI/180, wx=w.xFrac*W, L=Math.hypot(W,H);
-    const lx=-Math.sin(a), ly=Math.cos(a);
-    const sel=(wi===selWall && editWalls);
-
-    ctx.save();
-    ctx.strokeStyle=sel?'rgba(255,170,0,0.9)':'rgba(255,255,255,0.55)';
-    ctx.lineWidth=w.thick; ctx.lineCap='butt';
-
-    // Wall segments between slits
-    const sorted=[...w.slits].sort((a,b)=>a.pos-b.pos);
-    const segs=[]; let prev=0;
-    for(const sl of sorted){ const hw=(sl.width/2)/L; segs.push([prev,sl.pos-hw]); prev=sl.pos+hw; }
-    segs.push([prev,1]);
-    for(const [t0,t1] of segs){
-      if(t1<=t0) continue;
-      ctx.beginPath();
-      ctx.moveTo(wx+lx*(t0-0.5)*L, H/2+ly*(t0-0.5)*L);
-      ctx.lineTo(wx+lx*(t1-0.5)*L, H/2+ly*(t1-0.5)*L);
-      ctx.stroke();
-    }
-
-    // Slit gap markers
-    ctx.lineWidth=1; ctx.strokeStyle='rgba(127,255,0,0.6)'; ctx.setLineDash([3,3]);
-    for(const sl of sorted){
-      const hw=(sl.width/2)/L;
-      ctx.beginPath();
-      ctx.moveTo(wx+lx*(sl.pos-hw-0.5)*L, H/2+ly*(sl.pos-hw-0.5)*L);
-      ctx.lineTo(wx+lx*(sl.pos+hw-0.5)*L, H/2+ly*(sl.pos+hw-0.5)*L);
-      ctx.stroke();
-    }
-    ctx.setLineDash([]);
-
-    // Label
-    ctx.fillStyle=sel?'#ffaa00':'rgba(255,255,255,0.5)';
-    ctx.font='bold 10px JetBrains Mono'; ctx.textAlign='center'; ctx.textBaseline='middle';
-    ctx.fillText(w.name, wx+16, H/2);
+// ─── DRAWING — SOURCE MARKERS ─────────────────────────────────
+function drawSources(){
+  for(let i=0;i<sources.length;i++){
+    const s=sources[i];if(!s.enabled)continue;const sel=(i===selSrc&&!editWalls),col=srcCSS(s,60);ctx.save();
+    if(s.type==='point'){const r=sel?12:7;ctx.shadowColor=col;ctx.shadowBlur=sel?16:7;ctx.strokeStyle=col;ctx.lineWidth=sel?2.5:1.5;ctx.beginPath();ctx.arc(s.x,s.y,r,0,TAU);ctx.stroke();ctx.shadowBlur=0;ctx.fillStyle='rgba(0,0,0,0.85)';ctx.beginPath();ctx.arc(s.x,s.y,r,0,TAU);ctx.fill();ctx.fillStyle=col;ctx.font=`bold ${sel?11:9}px JetBrains Mono`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(s.name,s.x,s.y);}
+    else{const a=s.angle*Math.PI/180,lx=-Math.sin(a),ly=Math.cos(a),nx=Math.cos(a),ny=Math.sin(a),L=Math.hypot(W,H);ctx.shadowColor=col;ctx.shadowBlur=sel?10:4;ctx.strokeStyle=col;ctx.lineWidth=sel?2.5:1.5;ctx.beginPath();ctx.moveTo(s.cx-lx*L,s.cy-ly*L);ctx.lineTo(s.cx+lx*L,s.cy+ly*L);ctx.stroke();ctx.shadowBlur=0;ctx.strokeStyle=col.replace('rgb(','rgba(').replace(')',',0.6)');ctx.lineWidth=1;ctx.setLineDash([5,5]);const arrow=(ax,ay,dx,dy)=>{ctx.beginPath();ctx.moveTo(s.cx,s.cy);ctx.lineTo(ax,ay);ctx.moveTo(ax,ay);ctx.lineTo(ax-dx*8+lx*5,ay-dy*8+ly*5);ctx.moveTo(ax,ay);ctx.lineTo(ax-dx*8-lx*5,ay-dy*8-ly*5);ctx.stroke();};if(s.side==='right'||s.side==='both')arrow(s.cx+nx*35,s.cy+ny*35,nx,ny);if(s.side==='left'||s.side==='both')arrow(s.cx-nx*35,s.cy-ny*35,-nx,-ny);ctx.setLineDash([]);ctx.fillStyle=col;ctx.font=`bold ${sel?11:9}px JetBrains Mono`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(s.name,s.cx+ny*20,s.cy-nx*20);}
     ctx.restore();
   }
 }
 
-
-// ─────────────────────────────────────────────────────────────
-// CANVAS DRAWING — SOURCE MARKERS
-// ─────────────────────────────────────────────────────────────
-function drawSources() {
-  for(let i=0; i<sources.length; i++){
-    const s=sources[i]; if(!s.enabled) continue;
-    const sel=(i===selSrc && !editWalls), col=srcCSS(s,60);
-    ctx.save();
-    if(s.type==='point'){
-      const r=sel?12:7;
-      ctx.shadowColor=col; ctx.shadowBlur=sel?16:7;
-      ctx.strokeStyle=col; ctx.lineWidth=sel?2.5:1.5;
-      ctx.beginPath(); ctx.arc(s.x,s.y,r,0,TAU); ctx.stroke();
-      ctx.shadowBlur=0; ctx.fillStyle='rgba(0,0,0,0.85)';
-      ctx.beginPath(); ctx.arc(s.x,s.y,r,0,TAU); ctx.fill();
-      ctx.fillStyle=col; ctx.font=`bold ${sel?11:9}px JetBrains Mono`;
-      ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(s.name,s.x,s.y);
-    } else {
-      const a=s.angle*Math.PI/180, lx=-Math.sin(a),ly=Math.cos(a),nx=Math.cos(a),ny=Math.sin(a);
-      const L=Math.hypot(W,H);
-      ctx.shadowColor=col; ctx.shadowBlur=sel?10:4;
-      ctx.strokeStyle=col; ctx.lineWidth=sel?2.5:1.5;
-      ctx.beginPath(); ctx.moveTo(s.cx-lx*L,s.cy-ly*L); ctx.lineTo(s.cx+lx*L,s.cy+ly*L); ctx.stroke();
-      ctx.shadowBlur=0;
-      ctx.strokeStyle=col.replace('rgb(','rgba(').replace(')',',0.6)');
-      ctx.lineWidth=1; ctx.setLineDash([5,5]);
-      const arrow=(ax,ay,dx,dy)=>{
-        ctx.beginPath(); ctx.moveTo(s.cx,s.cy); ctx.lineTo(ax,ay);
-        ctx.moveTo(ax,ay); ctx.lineTo(ax-dx*8+lx*5,ay-dy*8+ly*5);
-        ctx.moveTo(ax,ay); ctx.lineTo(ax-dx*8-lx*5,ay-dy*8-ly*5); ctx.stroke();
-      };
-      if(s.side==='right'||s.side==='both') arrow(s.cx+nx*35,s.cy+ny*35,nx,ny);
-      if(s.side==='left' ||s.side==='both') arrow(s.cx-nx*35,s.cy-ny*35,-nx,-ny);
-      ctx.setLineDash([]);
-      ctx.fillStyle=col; ctx.font=`bold ${sel?11:9}px JetBrains Mono`;
-      ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.fillText(s.name,s.cx+ny*20,s.cy-nx*20);
-    }
-    ctx.restore();
-  }
-}
-
-
-// ─────────────────────────────────────────────────────────────
-// PROFILE STRIP — intensity vs position plot
-// ─────────────────────────────────────────────────────────────
+// ─── PROFILE STRIP ────────────────────────────────────────────
 const PCSS={cyan:'rgba(0,229,255,0.5)',green:'rgba(127,255,0,0.5)',white:'rgba(255,255,255,0.35)',red:'rgba(255,61,127,0.5)'};
 const PHEX={cyan:'#00e5ff',green:'#7fff00',white:'#ffffff',red:'#ff3d7f'};
-
-function scanLine() {
-  const L=Math.hypot(W,H);
-  switch(profMode){
-    case 'horiz':  return [0,H*profPos,W,H*profPos];
-    case 'vert':   return [W*profPos,0,W*profPos,H];
-    case 'diag':  {const a=profPos*Math.PI; return [W/2-Math.cos(a)*L,H/2-Math.sin(a)*L,W/2+Math.cos(a)*L,H/2+Math.sin(a)*L];}
-    case 'radial':{const a=profPos*TAU; return [W/2,H/2,W/2+Math.cos(a)*L,H/2+Math.sin(a)*L];}
-    default: return null;
-  }
-}
-
-function drawScanIndicator() {
-  ctx.save();
-  ctx.strokeStyle=PCSS[profColor]||PCSS.cyan; ctx.lineWidth=1; ctx.setLineDash([4,4]);
-  if(profMode==='circ'){
-    const r=Math.min(W,H)*(0.1+profPos*0.4);
-    ctx.beginPath(); ctx.arc(W/2,H/2,r,0,TAU); ctx.stroke();
-  } else {
-    const ln=scanLine(); if(ln){ctx.beginPath();ctx.moveTo(ln[0],ln[1]);ctx.lineTo(ln[2],ln[3]);ctx.stroke();}
-  }
-  ctx.restore();
-}
-
-function drawProfile(eSrc, k, omega) {
-  pctx.fillStyle='#000'; pctx.fillRect(0,0,PW,PH);
-
-  if(showProfGrid){
-    const mg=PH*0.08, sp=PH*0.84;
-    [0,0.25,0.5,0.75,1].forEach(lv=>{
-      const y=PH-mg-lv*sp;
-      pctx.strokeStyle=lv===0||lv===1?'rgba(255,255,255,0.2)':lv===0.5?'rgba(255,255,255,0.12)':'rgba(255,255,255,0.06)';
-      pctx.lineWidth=1; pctx.beginPath(); pctx.moveTo(0,y); pctx.lineTo(PW,y); pctx.stroke();
-      pctx.fillStyle='rgba(255,255,255,0.2)'; pctx.font='7px JetBrains Mono';
-      pctx.textAlign='left'; pctx.textBaseline='middle';
-      pctx.fillText(lv===1?'1':lv===0?'0':lv.toFixed(2), 2, y);
-    });
-  }
-
-  const N=PW, vals=new Float32Array(N);
-  const smpl=(x,y)=>{ let I=fieldAt(x,y,eSrc,k,omega,simTime); if(gamma!==1)I=Math.pow(I,1/gamma); return invertImg?1-I:I; };
-
-  if(profMode==='circ'){
-    const r=Math.min(W,H)*(0.1+profPos*0.4);
-    for(let i=0;i<N;i++){const a=(i/N)*TAU; vals[i]=smpl(W/2+Math.cos(a)*r,H/2+Math.sin(a)*r);}
-  } else if(profMode==='radial'){
-    const a=profPos*TAU, mxR=Math.hypot(W,H)/2;
-    for(let i=0;i<N;i++){const d=(i/(N-1))*mxR; vals[i]=smpl(W/2+Math.cos(a)*d,H/2+Math.sin(a)*d);}
-  } else {
-    const ln=scanLine(); if(!ln)return;
-    const [x0,y0,x1,y1]=ln;
-    for(let i=0;i<N;i++){const t=i/(N-1); vals[i]=smpl(x0+(x1-x0)*t,y0+(y1-y0)*t);}
-  }
-
-  const col=PHEX[profColor]||'#00e5ff', mg=PH*0.08, sp=PH*0.84;
-
-  if(showProfFill){
-    pctx.save();
-    const gr=pctx.createLinearGradient(0,0,0,PH);
-    gr.addColorStop(0,col+'88'); gr.addColorStop(1,col+'0a');
-    pctx.fillStyle=gr; pctx.beginPath(); pctx.moveTo(0,PH);
-    for(let i=0;i<N;i++) pctx.lineTo(i,PH-mg-vals[i]*sp);
-    pctx.lineTo(N-1,PH); pctx.closePath(); pctx.fill(); pctx.restore();
-  }
-
-  pctx.save(); pctx.strokeStyle=col; pctx.lineWidth=1.5; pctx.lineJoin='round';
-  pctx.shadowColor=col; pctx.shadowBlur=3; pctx.beginPath();
-  for(let i=0;i<N;i++){const py=PH-mg-vals[i]*sp; i===0?pctx.moveTo(0,py):pctx.lineTo(i,py);}
-  pctx.stroke(); pctx.restore();
-
-  if(!showProfGrid){
-    pctx.fillStyle='rgba(255,255,255,0.18)'; pctx.font='7px JetBrains Mono';
-    pctx.textBaseline='top';    pctx.textAlign='left'; pctx.fillText('1',2,mg-1);
-    pctx.textBaseline='bottom'; pctx.fillText('0',2,PH-1);
-  }
-
+function scanLine(){const L=Math.hypot(W,H);switch(profMode){case 'horiz':return[0,H*profPos,W,H*profPos];case 'vert':return[W*profPos,0,W*profPos,H];case 'diag':{const a=profPos*Math.PI;return[W/2-Math.cos(a)*L,H/2-Math.sin(a)*L,W/2+Math.cos(a)*L,H/2+Math.sin(a)*L];}case 'radial':{const a=profPos*TAU;return[W/2,H/2,W/2+Math.cos(a)*L,H/2+Math.sin(a)*L];}default:return null;}}
+function drawScanIndicator(){ctx.save();ctx.strokeStyle=PCSS[profColor]||PCSS.cyan;ctx.lineWidth=1;ctx.setLineDash([4,4]);if(profMode==='circ'){const r=Math.min(W,H)*(0.1+profPos*0.4);ctx.beginPath();ctx.arc(W/2,H/2,r,0,TAU);ctx.stroke();}else{const ln=scanLine();if(ln){ctx.beginPath();ctx.moveTo(ln[0],ln[1]);ctx.lineTo(ln[2],ln[3]);ctx.stroke();}}ctx.restore();}
+function drawProfile(eSrc,k,omega){
+  pctx.fillStyle='#000';pctx.fillRect(0,0,PW,PH);
+  if(showProfGrid){const mg=PH*0.08,sp=PH*0.84;[0,0.25,0.5,0.75,1].forEach(lv=>{const y=PH-mg-lv*sp;pctx.strokeStyle=lv===0||lv===1?'rgba(255,255,255,0.2)':lv===0.5?'rgba(255,255,255,0.12)':'rgba(255,255,255,0.06)';pctx.lineWidth=1;pctx.beginPath();pctx.moveTo(0,y);pctx.lineTo(PW,y);pctx.stroke();pctx.fillStyle='rgba(255,255,255,0.2)';pctx.font='7px JetBrains Mono';pctx.textAlign='left';pctx.textBaseline='middle';pctx.fillText(lv===1?'1':lv===0?'0':lv.toFixed(2),2,y);});}
+  const N=PW,vals=new Float32Array(N);
+  const smpl=(x,y)=>{let I=fieldAt(x,y,eSrc,k,omega,simTime);if(gamma!==1)I=Math.pow(I,1/gamma);return invertImg?1-I:I;};
+  if(profMode==='circ'){const r=Math.min(W,H)*(0.1+profPos*0.4);for(let i=0;i<N;i++){const a=(i/N)*TAU;vals[i]=smpl(W/2+Math.cos(a)*r,H/2+Math.sin(a)*r);}}
+  else if(profMode==='radial'){const a=profPos*TAU,mxR=Math.hypot(W,H)/2;for(let i=0;i<N;i++){const d=(i/(N-1))*mxR;vals[i]=smpl(W/2+Math.cos(a)*d,H/2+Math.sin(a)*d);}}
+  else{const ln=scanLine();if(!ln)return;const[x0,y0,x1,y1]=ln;for(let i=0;i<N;i++){const t=i/(N-1);vals[i]=smpl(x0+(x1-x0)*t,y0+(y1-y0)*t);}}
+  const col=PHEX[profColor]||'#00e5ff',mg=PH*0.08,sp=PH*0.84;
+  if(showProfFill){pctx.save();const gr=pctx.createLinearGradient(0,0,0,PH);gr.addColorStop(0,col+'88');gr.addColorStop(1,col+'0a');pctx.fillStyle=gr;pctx.beginPath();pctx.moveTo(0,PH);for(let i=0;i<N;i++)pctx.lineTo(i,PH-mg-vals[i]*sp);pctx.lineTo(N-1,PH);pctx.closePath();pctx.fill();pctx.restore();}
+  pctx.save();pctx.strokeStyle=col;pctx.lineWidth=1.5;pctx.lineJoin='round';pctx.shadowColor=col;pctx.shadowBlur=3;pctx.beginPath();for(let i=0;i<N;i++){const py=PH-mg-vals[i]*sp;i===0?pctx.moveTo(0,py):pctx.lineTo(i,py);}pctx.stroke();pctx.restore();
+  if(!showProfGrid){pctx.fillStyle='rgba(255,255,255,0.18)';pctx.font='7px JetBrains Mono';pctx.textBaseline='top';pctx.textAlign='left';pctx.fillText('1',2,PH*0.08-1);pctx.textBaseline='bottom';pctx.fillText('0',2,PH-1);}
   const modeLabel={horiz:'H-slice',vert:'V-slice',diag:'Diagonal',radial:'Radial',circ:'Circular'};
-  pctx.fillStyle='rgba(255,255,255,0.18)'; pctx.font='7px JetBrains Mono';
-  pctx.textAlign='right'; pctx.textBaseline='bottom'; pctx.fillText(modeLabel[profMode],PW-3,PH-1);
-
-  document.getElementById('plabel').textContent =
-    profMode==='circ'   ? `r=${(Math.min(W,H)*(0.1+profPos*0.4)).toFixed(0)}px` :
-    profMode==='radial' ? `θ=${(profPos*360).toFixed(0)}°` :
-    profMode==='diag'   ? `θ=${(profPos*180).toFixed(0)}°` :
-                          `pos=${(profPos*100).toFixed(0)}%`;
+  pctx.fillStyle='rgba(255,255,255,0.18)';pctx.font='7px JetBrains Mono';pctx.textAlign='right';pctx.textBaseline='bottom';pctx.fillText(modeLabel[profMode],PW-3,PH-1);
+  document.getElementById('plabel').textContent=profMode==='circ'?`r=${(Math.min(W,H)*(0.1+profPos*0.4)).toFixed(0)}px`:profMode==='radial'?`th=${(profPos*360).toFixed(0)}deg`:profMode==='diag'?`th=${(profPos*180).toFixed(0)}deg`:`pos=${(profPos*100).toFixed(0)}%`;
 }
 
-
-// ─────────────────────────────────────────────────────────────
-// RESIZE
-// ─────────────────────────────────────────────────────────────
-function resize() {
-  const cw=document.getElementById('cwrap');
-  W=canvas.width=cw.clientWidth; H=canvas.height=cw.clientHeight;
-  imgData=ctx.createImageData(W,H);
-  const pw=document.getElementById('pwrap');
-  PW=pcanvas.width=pw.clientWidth; PH=pcanvas.height=pw.clientHeight;
+// ─── RESIZE ───────────────────────────────────────────────────
+function resize(){
+  const cw=document.getElementById('cwrap');W=cw.clientWidth;H=cw.clientHeight;
+  glCanvas.width=W;glCanvas.height=H;canvas.width=W;canvas.height=H;
+  const pw=document.getElementById('pwrap');PW=pcanvas.width=pw.clientWidth;PH=pcanvas.height=pw.clientHeight;
 }
 
-
-// ─────────────────────────────────────────────────────────────
-// DYNAMIC UI — SOURCE CONTROLS
-// ─────────────────────────────────────────────────────────────
-
-/** Rebuilds the source tab buttons and the selected source's property controls. */
-function rebuildSrcUI() {
-  const tabs=document.getElementById('src-tabs');
-  tabs.innerHTML='';
-  sources.forEach((s,i)=>{
-    const col=srcCSS(s,40);
-    const t=document.createElement('div');
-    t.className='itab'+(i===selSrc&&!editWalls?' on':'')+(s.enabled?'':' off');
-    t.textContent=s.name+(s.type==='plane'?' ⟿':'');
-    t.style.borderColor=col;
-    if(i===selSrc&&!editWalls) t.style.background=col;
-    t.addEventListener('click',()=>{selSrc=i;editWalls=false;rebuildSrcUI();rebuildWallUI();});
-    tabs.appendChild(t);
-  });
-
-  const ctrl=document.getElementById('src-ctrl');
-  ctrl.innerHTML='';
-  if(!sources.length){ ctrl.innerHTML='<div style="font-size:8px;color:var(--dim)">No sources — use + Point or + Plane.</div>'; rebuildWallUI(); return; }
-  if(editWalls){ rebuildWallUI(); return; }
-  const s=sources[selSrc]; if(!s){ rebuildWallUI(); return; }
-
+// ─── DYNAMIC UI ───────────────────────────────────────────────
+function rebuildSrcUI(){
+  const tabs=document.getElementById('src-tabs');tabs.innerHTML='';
+  sources.forEach((s,i)=>{const col=srcCSS(s,40);const t=document.createElement('div');t.className='itab'+(i===selSrc&&!editWalls?' on':'')+(s.enabled?'':' off');t.textContent=s.name+(s.type==='plane'?' ->':'');t.style.borderColor=col;if(i===selSrc&&!editWalls)t.style.background=col;t.addEventListener('click',()=>{selSrc=i;editWalls=false;rebuildSrcUI();rebuildWallUI();});tabs.appendChild(t);});
+  const ctrl=document.getElementById('src-ctrl');ctrl.innerHTML='';
+  if(!sources.length){ctrl.innerHTML='<div style="font-size:8px;color:var(--dim)">No sources - use + Point or + Plane.</div>';rebuildWallUI();return;}
+  if(editWalls){rebuildWallUI();return;}
+  const s=sources[selSrc];if(!s){rebuildWallUI();return;}
   mkTogRow(ctrl,s,'enabled','Enabled',rebuildSrcUI);
-
-  // Light source picker row
-  {
-    const ls=getLightSource(s);
-    const row=document.createElement('div'); row.className='row';
-    const lbl=el('span','lbl','Light src');
-    const sw=document.createElement('div'); sw.className='swatch';
-    setSwatchColor(sw,s);
-    const sel=document.createElement('select');
-    LIGHT_SOURCES.forEach(ls=>{
-      const o=document.createElement('option');
-      o.value=ls.id; o.textContent=ls.name;
-      if(s.lightSrc===ls.id) o.selected=true;
-      sel.appendChild(o);
-    });
-    sel.addEventListener('change',()=>{
-      s.lightSrc=sel.value;
-      const nls=getLightSource(s);
-      setSwatchColor(sw,s);
-      if(s.lightSrc!=='custom'){
-        wavelength=nls.wlPx;
-        const sl=document.getElementById('sl-wl');
-        if(sl){sl.value=wavelength; document.getElementById('vl-wl').textContent=wavelength+'px';}
-      }
-      desc.textContent=nls.desc+` · coherence: ${(nls.coh*100).toFixed(0)}%`;
-      rebuildSrcUI();
-    });
-    row.append(lbl,sw,sel); ctrl.appendChild(row);
-    const desc=document.createElement('div');
-    desc.style.cssText='font-size:8px;color:var(--dim);margin:0 0 2px 62px;line-height:1.4;';
-    desc.textContent=ls.desc+` · coherence: ${(ls.coh*100).toFixed(0)}%`;
-    ctrl.appendChild(desc);
-  }
-
+  {const ls=getLightSource(s);const row=document.createElement('div');row.className='row';const lbl=el('span','lbl','Light src');const sw=document.createElement('div');sw.className='swatch';setSwatchColor(sw,s);const sel=document.createElement('select');LIGHT_SOURCES.forEach(ls=>{const o=document.createElement('option');o.value=ls.id;o.textContent=ls.name;if(s.lightSrc===ls.id)o.selected=true;sel.appendChild(o);});sel.addEventListener('change',()=>{s.lightSrc=sel.value;const nls=getLightSource(s);setSwatchColor(sw,s);if(s.lightSrc!=='custom'){wavelength=nls.wlPx;const sl2=document.getElementById('sl-wl');if(sl2){sl2.value=wavelength;document.getElementById('vl-wl').textContent=wavelength+'px';}}desc.textContent=nls.desc+` coh: ${(nls.coh*100).toFixed(0)}%`;rebuildSrcUI();});row.append(lbl,sw,sel);ctrl.appendChild(row);const desc=document.createElement('div');desc.style.cssText='font-size:8px;color:var(--dim);margin:0 0 2px 62px;line-height:1.4;';desc.textContent=ls.desc+` coh: ${(ls.coh*100).toFixed(0)}%`;ctrl.appendChild(desc);}
   mkSelRow(ctrl,s,'waveform','Waveform',['sine','square','saw','tri']);
   mkSlRow(ctrl,s,'amp','Amplitude',0.1,3,0.05,v=>v.toFixed(2));
-  mkSlRow(ctrl,s,'phase','Phase °',0,360,1,v=>v.toFixed(0)+'°');
-
-  if(s.type==='point'){
-    mkSlRow(ctrl,s,'x','X',0,W||600,1,v=>v.toFixed(0));
-    mkSlRow(ctrl,s,'y','Y',0,H||400,1,v=>v.toFixed(0));
-  } else {
-    mkSlRow(ctrl,s,'cx','Centre X',0,W||600,1,v=>v.toFixed(0));
-    mkSlRow(ctrl,s,'cy','Centre Y',0,H||400,1,v=>v.toFixed(0));
-    mkSlRow(ctrl,s,'angle','Angle °',0,360,1,v=>v.toFixed(0)+'°');
-    mkSelRow(ctrl,s,'side','Side',['right','left','both'],{right:'Right only',left:'Left only',both:'Both sides'});
-  }
-
-  const rm=document.createElement('button');
-  rm.className='btn danger'; rm.style.marginTop='3px'; rm.textContent='Remove '+s.name;
-  rm.addEventListener('click',()=>{sources.splice(selSrc,1);selSrc=Math.min(selSrc,sources.length-1);rebuildSrcUI();});
-  ctrl.appendChild(rm);
+  mkSlRow(ctrl,s,'phase','Phase deg',0,360,1,v=>v.toFixed(0)+'deg');
+  if(s.type==='point'){mkSlRow(ctrl,s,'x','X',0,W||600,1,v=>v.toFixed(0));mkSlRow(ctrl,s,'y','Y',0,H||400,1,v=>v.toFixed(0));}
+  else{mkSlRow(ctrl,s,'cx','Centre X',0,W||600,1,v=>v.toFixed(0));mkSlRow(ctrl,s,'cy','Centre Y',0,H||400,1,v=>v.toFixed(0));mkSlRow(ctrl,s,'angle','Angle deg',0,360,1,v=>v.toFixed(0)+'deg');mkSelRow(ctrl,s,'side','Side',['right','left','both'],{right:'Right only',left:'Left only',both:'Both sides'});}
+  const rm=document.createElement('button');rm.className='btn danger';rm.style.marginTop='3px';rm.textContent='Remove '+s.name;rm.addEventListener('click',()=>{sources.splice(selSrc,1);selSrc=Math.min(selSrc,sources.length-1);rebuildSrcUI();});ctrl.appendChild(rm);
   rebuildWallUI();
 }
+function setSwatchColor(swatch,src){const[r,g,b]=srcRGB(src);swatch.style.background=`rgb(${Math.min(255,(r*255+40))|0},${Math.min(255,(g*255+40))|0},${Math.min(255,(b*255+40))|0})`;}
 
-function setSwatchColor(swatch, src) {
-  const [r,g,b]=srcRGB(src);
-  swatch.style.background=`rgb(${Math.min(255,(r*255+40))|0},${Math.min(255,(g*255+40))|0},${Math.min(255,(b*255+40))|0})`;
+function rebuildWallUI(){
+  const tabs=document.getElementById('wall-tabs');tabs.innerHTML='';
+  if(!walls.length){tabs.innerHTML='<div style="font-size:8px;color:var(--dim)">No walls - use + Wall.</div>';document.getElementById('wall-ctrl').innerHTML='';return;}
+  walls.forEach((w,i)=>{const t=document.createElement('div');t.className='itab'+(i===selWall&&editWalls?' on':'');t.textContent=w.name+(w.enabled?'':' x');t.style.borderColor='rgba(255,170,0,0.5)';if(i===selWall&&editWalls)t.style.background='rgba(255,170,0,0.8)';t.addEventListener('click',()=>{selWall=i;editWalls=true;rebuildSrcUI();});tabs.appendChild(t);});
+  const ctrl=document.getElementById('wall-ctrl');ctrl.innerHTML='';if(!editWalls)return;
+  const w=walls[selWall];if(!w)return;
+  mkTogRow(ctrl,w,'enabled','Enabled',rebuildWallUI);mkSlRow(ctrl,w,'xFrac','H position',0,1,0.005,v=>(v*100).toFixed(0)+'%');mkSlRow(ctrl,w,'angle','Angle deg',-45,45,1,v=>v.toFixed(0)+'deg');mkSlRow(ctrl,w,'thick','Thickness',2,20,1,v=>v.toFixed(0)+'px');
+  const hdr=document.createElement('div');hdr.style.cssText='display:flex;align-items:center;gap:6px;margin-top:3px;font-size:8px;color:var(--dim);';hdr.innerHTML=`<span>SLITS (${w.slits.length})</span>`;const addBtn=document.createElement('button');addBtn.className='btn';addBtn.style.fontSize='8px';addBtn.textContent='+ Slit';addBtn.addEventListener('click',()=>{w.slits.push({pos:0.5,width:20});rebuildWallUI();});hdr.appendChild(addBtn);ctrl.appendChild(hdr);
+  w.slits.forEach((sl,si)=>{const card=document.createElement('div');card.className='slit-card';const ch=document.createElement('div');ch.className='slit-card-hdr';ch.innerHTML=`<span style="font-size:8px;color:var(--green)">Slit ${si+1}</span>`;const rm=document.createElement('button');rm.className='btn danger';rm.style.fontSize='8px';rm.textContent='x';rm.addEventListener('click',()=>{w.slits.splice(si,1);rebuildWallUI();});ch.appendChild(rm);card.appendChild(ch);mkSlRow(card,sl,'pos','Position',0,1,0.005,v=>(v*100).toFixed(0)+'%');mkSlRow(card,sl,'width','Width px',4,120,1,v=>v.toFixed(0)+'px');ctrl.appendChild(card);});
+  const rm=document.createElement('button');rm.className='btn danger';rm.style.marginTop='3px';rm.textContent='Remove '+w.name;rm.addEventListener('click',()=>{walls.splice(selWall,1);selWall=Math.max(0,selWall-1);if(!walls.length)editWalls=false;rebuildSrcUI();});ctrl.appendChild(rm);
 }
 
-
-// ─────────────────────────────────────────────────────────────
-// DYNAMIC UI — WALL CONTROLS
-// ─────────────────────────────────────────────────────────────
-
-/** Rebuilds the wall tab buttons and selected wall's property controls. */
-function rebuildWallUI() {
-  const tabs=document.getElementById('wall-tabs');
-  tabs.innerHTML='';
-  if(!walls.length){
-    tabs.innerHTML='<div style="font-size:8px;color:var(--dim)">No walls — use + Wall.</div>';
-    document.getElementById('wall-ctrl').innerHTML=''; return;
-  }
-  walls.forEach((w,i)=>{
-    const t=document.createElement('div');
-    t.className='itab'+(i===selWall&&editWalls?' on':'');
-    t.textContent=w.name+(w.enabled?'':' ✕');
-    t.style.borderColor='rgba(255,170,0,0.5)';
-    if(i===selWall&&editWalls) t.style.background='rgba(255,170,0,0.8)';
-    t.addEventListener('click',()=>{selWall=i;editWalls=true;rebuildSrcUI();});
-    tabs.appendChild(t);
-  });
-
-  const ctrl=document.getElementById('wall-ctrl');
-  ctrl.innerHTML='';
-  if(!editWalls) return;
-  const w=walls[selWall]; if(!w) return;
-
-  mkTogRow(ctrl,w,'enabled','Enabled',rebuildWallUI);
-  mkSlRow(ctrl,w,'xFrac','H position',0,1,0.005,v=>(v*100).toFixed(0)+'%');
-  mkSlRow(ctrl,w,'angle','Angle °',-45,45,1,v=>v.toFixed(0)+'°');
-  mkSlRow(ctrl,w,'thick','Thickness',2,20,1,v=>v.toFixed(0)+'px');
-
-  // Slit editor
-  const hdr=document.createElement('div');
-  hdr.style.cssText='display:flex;align-items:center;gap:6px;margin-top:3px;font-size:8px;color:var(--dim);';
-  hdr.innerHTML=`<span>SLITS (${w.slits.length})</span>`;
-  const addBtn=document.createElement('button'); addBtn.className='btn'; addBtn.style.fontSize='8px'; addBtn.textContent='+ Slit';
-  addBtn.addEventListener('click',()=>{w.slits.push({pos:0.5,width:20});rebuildWallUI();});
-  hdr.appendChild(addBtn); ctrl.appendChild(hdr);
-
-  w.slits.forEach((sl,si)=>{
-    const card=document.createElement('div'); card.className='slit-card';
-    const ch=document.createElement('div'); ch.className='slit-card-hdr';
-    ch.innerHTML=`<span style="font-size:8px;color:var(--green)">Slit ${si+1}</span>`;
-    const rm=document.createElement('button'); rm.className='btn danger'; rm.style.fontSize='8px'; rm.textContent='✕';
-    rm.addEventListener('click',()=>{w.slits.splice(si,1);rebuildWallUI();});
-    ch.appendChild(rm); card.appendChild(ch);
-    mkSlRow(card,sl,'pos','Position',0,1,0.005,v=>(v*100).toFixed(0)+'%');
-    mkSlRow(card,sl,'width','Width px',4,120,1,v=>v.toFixed(0)+'px');
-    ctrl.appendChild(card);
-  });
-
-  const rm=document.createElement('button');
-  rm.className='btn danger'; rm.style.marginTop='3px'; rm.textContent='Remove '+w.name;
-  rm.addEventListener('click',()=>{walls.splice(selWall,1);selWall=Math.max(0,selWall-1);if(!walls.length)editWalls=false;rebuildSrcUI();});
-  ctrl.appendChild(rm);
-}
-
-
-// ─────────────────────────────────────────────────────────────
-// UI WIDGET HELPERS
-// ─────────────────────────────────────────────────────────────
 const el=(tag,cls,txt)=>{const e=document.createElement(tag);if(cls)e.className=cls;if(txt!==undefined)e.textContent=txt;return e;};
+function mkSlRow(parent,obj,key,label,mn,mx,step,fmt){const row=document.createElement('div');row.className='row';const lbl=el('span','lbl',label);const sl=document.createElement('input');sl.type='range';sl.min=mn;sl.max=mx;sl.step=step;sl.value=obj[key];const vl=el('span','val',fmt(obj[key]));sl.addEventListener('input',()=>{obj[key]=parseFloat(sl.value);vl.textContent=fmt(obj[key]);});row.append(lbl,sl,vl);parent.appendChild(row);}
+function mkSelRow(parent,obj,key,label,opts,labelMap={}){const row=document.createElement('div');row.className='row';row.appendChild(el('span','lbl',label));const sel=document.createElement('select');opts.forEach(o=>{const op=el('option');op.value=o;op.textContent=labelMap[o]||o;if(obj[key]===o)op.selected=true;sel.appendChild(op);});sel.addEventListener('change',()=>{obj[key]=sel.value;});row.appendChild(sel);parent.appendChild(row);}
+function mkTogRow(parent,obj,key,label,cb){const row=document.createElement('div');row.className='row';const b=el('button','tog'+(obj[key]?' on':''),label+' '+(obj[key]?'ON':'OFF'));b.addEventListener('click',()=>{obj[key]=!obj[key];b.className='tog'+(obj[key]?' on':'');b.textContent=label+' '+(obj[key]?'ON':'OFF');if(cb)cb();});row.appendChild(b);parent.appendChild(row);}
 
-function mkSlRow(parent, obj, key, label, mn, mx, step, fmt) {
-  const row=document.createElement('div'); row.className='row';
-  const lbl=el('span','lbl',label);
-  const sl=document.createElement('input'); sl.type='range'; sl.min=mn; sl.max=mx; sl.step=step; sl.value=obj[key];
-  const vl=el('span','val',fmt(obj[key]));
-  sl.addEventListener('input',()=>{obj[key]=parseFloat(sl.value);vl.textContent=fmt(obj[key]);});
-  row.append(lbl,sl,vl); parent.appendChild(row);
-}
+function bindSlider(id,setter,fmt){const sl=document.getElementById(id),vl=document.getElementById(id.replace('sl-','vl-'));if(sl)sl.addEventListener('input',()=>{setter(parseFloat(sl.value));if(vl)vl.textContent=fmt(parseFloat(sl.value));});}
+function bindSelect(id,setter){const e=document.getElementById(id);if(e)e.addEventListener('change',()=>setter(e.value));}
+function bindToggle(id,getter,setter,cb){const e=document.getElementById(id);if(e)e.addEventListener('click',()=>{setter(!getter());e.classList.toggle('on',getter());if(cb)cb();});}
 
-function mkSelRow(parent, obj, key, label, opts, labelMap={}) {
-  const row=document.createElement('div'); row.className='row';
-  row.appendChild(el('span','lbl',label));
-  const sel=document.createElement('select');
-  opts.forEach(o=>{const op=el('option');op.value=o;op.textContent=labelMap[o]||o;if(obj[key]===o)op.selected=true;sel.appendChild(op);});
-  sel.addEventListener('change',()=>{obj[key]=sel.value;});
-  row.appendChild(sel); parent.appendChild(row);
-}
+bindSlider('sl-sharp',v=>sharpness=v,v=>v.toFixed(1));
+bindSlider('sl-wl',v=>wavelength=v,v=>v.toFixed(0)+'px');
+bindSlider('sl-bright',v=>brightness=v,v=>v.toFixed(2));
+bindSlider('sl-bg',v=>bgLevel=v,v=>v.toFixed(2));
+bindSlider('sl-gamma',v=>gamma=v,v=>v.toFixed(2));
+bindSlider('sl-speed',v=>speed=v,v=>v.toFixed(2));
+bindSlider('sl-damp',v=>damping=v,v=>v.toFixed(3));
+bindSlider('sl-snap',v=>snapSz=v,v=>v.toFixed(0)+'px');
+bindSlider('sl-ppos',v=>profPos=v,v=>{const m={horiz:`${(v*100).toFixed(0)}%`,vert:`${(v*100).toFixed(0)}%`,diag:`${(v*180).toFixed(0)}deg`,radial:`${(v*360).toFixed(0)}deg`,circ:`r=${(Math.min(W,H)*(0.1+v*0.4)).toFixed(0)}px`};return m[profMode]||`${(v*100).toFixed(0)}%`;});
+bindSelect('sel-cmap',v=>colorMap=v);bindSelect('sel-style',v=>fringeStyle=v);bindSelect('sel-mode',v=>superpos=v);bindSelect('sel-pcol',v=>profColor=v);
+bindToggle('t-snap',()=>snapOn,v=>snapOn=v);bindToggle('t-labels',()=>showLabels,v=>showLabels=v);bindToggle('t-grid',()=>showGrid,v=>showGrid=v);
+bindToggle('t-rings',()=>showRings,v=>showRings=v);bindToggle('t-nodes',()=>showNulls,v=>showNulls=v);bindToggle('t-invert',()=>invertImg,v=>invertImg=v);
+bindToggle('t-pline',()=>showProfLine,v=>showProfLine=v);bindToggle('t-pfill',()=>showProfFill,v=>showProfFill=v);bindToggle('t-pgrid',()=>showProfGrid,v=>showProfGrid=v);
 
-function mkTogRow(parent, obj, key, label, cb) {
-  const row=document.createElement('div'); row.className='row';
-  const b=el('button','tog'+(obj[key]?' on':''), label+' '+(obj[key]?'ON':'OFF'));
-  b.addEventListener('click',()=>{obj[key]=!obj[key];b.className='tog'+(obj[key]?' on':'');b.textContent=label+' '+(obj[key]?'ON':'OFF');if(cb)cb();});
-  row.appendChild(b); parent.appendChild(row);
-}
+document.getElementById('b-pause').addEventListener('click',()=>{paused=!paused;const b=document.getElementById('b-pause');b.textContent=paused?'Play':'Pause';b.classList.toggle('on',paused);});
+document.getElementById('b-freeze').addEventListener('click',()=>{frozen=!frozen;document.getElementById('b-freeze').classList.toggle('on',frozen);});
+document.getElementById('b-addpt').addEventListener('click',()=>{if(sources.length>=6)return;const i=sources.length;sources.push(mkPoint(snap(W*0.3+Math.random()*W*0.4),snap(H*0.3+Math.random()*H*0.4),i));selSrc=sources.length-1;editWalls=false;rebuildSrcUI();});
+document.getElementById('b-addpw').addEventListener('click',()=>{if(sources.length>=6)return;sources.push(mkPlane(sources.length));selSrc=sources.length-1;editWalls=false;rebuildSrcUI();});
+document.getElementById('b-addwall').addEventListener('click',()=>{walls.push(mkWall());selWall=walls.length-1;editWalls=true;rebuildSrcUI();});
+document.getElementById('b-clear').addEventListener('click',()=>{sources=[];walls=[];selSrc=0;selWall=0;editWalls=false;rebuildSrcUI();});
+document.querySelectorAll('#tab-bar .tab').forEach(tab=>{tab.addEventListener('click',()=>{document.querySelectorAll('#tab-bar .tab').forEach(t=>t.classList.remove('on'));document.querySelectorAll('.tpane').forEach(p=>p.classList.remove('on'));tab.classList.add('on');document.getElementById('pane-'+tab.dataset.t).classList.add('on');});});
+document.querySelectorAll('#prof-modes [data-m]').forEach(btn=>{btn.addEventListener('click',()=>{document.querySelectorAll('#prof-modes [data-m]').forEach(b=>b.classList.remove('on'));btn.classList.add('on');profMode=btn.dataset.m;});});
 
-
-// ─────────────────────────────────────────────────────────────
-// GLOBAL CONTROL BINDINGS (sliders, selects, toggles)
-// ─────────────────────────────────────────────────────────────
-function bindSlider(id, setter, fmt) {
-  const sl=document.getElementById(id), vl=document.getElementById(id.replace('sl-','vl-'));
-  if(sl) sl.addEventListener('input',()=>{setter(parseFloat(sl.value));if(vl)vl.textContent=fmt(parseFloat(sl.value));});
-}
-function bindSelect(id, setter) {
-  const el=document.getElementById(id); if(el) el.addEventListener('change',()=>setter(el.value));
-}
-function bindToggle(id, getter, setter, cb) {
-  const el=document.getElementById(id);
-  if(el) el.addEventListener('click',()=>{setter(!getter());el.classList.toggle('on',getter());if(cb)cb();});
-}
-
-bindSlider('sl-sharp', v=>sharpness=v,    v=>v.toFixed(1));
-bindSlider('sl-wl',    v=>wavelength=v,   v=>v.toFixed(0)+'px');
-bindSlider('sl-bright',v=>brightness=v,   v=>v.toFixed(2));
-bindSlider('sl-bg',    v=>bgLevel=v,      v=>v.toFixed(2));
-bindSlider('sl-gamma', v=>gamma=v,        v=>v.toFixed(2));
-bindSlider('sl-speed', v=>speed=v,        v=>v.toFixed(2));
-bindSlider('sl-damp',  v=>damping=v,      v=>v.toFixed(3));
-bindSlider('sl-snap',  v=>snapSz=v,       v=>v.toFixed(0)+'px');
-bindSlider('sl-ppos',  v=>profPos=v, v=>{
-  const m={horiz:`${(v*100).toFixed(0)}%`,vert:`${(v*100).toFixed(0)}%`,
-           diag:`${(v*180).toFixed(0)}°`,radial:`${(v*360).toFixed(0)}°`,
-           circ:`r=${(Math.min(W,H)*(0.1+v*0.4)).toFixed(0)}px`};
-  return m[profMode]||`${(v*100).toFixed(0)}%`;
-});
-
-bindSelect('sel-cmap',  v=>colorMap=v);
-bindSelect('sel-style', v=>fringeStyle=v);
-bindSelect('sel-mode',  v=>superpos=v);
-bindSelect('sel-pcol',  v=>profColor=v);
-
-bindToggle('t-snap',   ()=>snapOn,       v=>snapOn=v);
-bindToggle('t-labels', ()=>showLabels,   v=>showLabels=v);
-bindToggle('t-grid',   ()=>showGrid,     v=>showGrid=v);
-bindToggle('t-rings',  ()=>showRings,    v=>showRings=v);
-bindToggle('t-nodes',  ()=>showNulls,    v=>showNulls=v);
-bindToggle('t-invert', ()=>invertImg,    v=>invertImg=v);
-bindToggle('t-pline',  ()=>showProfLine, v=>showProfLine=v);
-bindToggle('t-pfill',  ()=>showProfFill, v=>showProfFill=v);
-bindToggle('t-pgrid',  ()=>showProfGrid, v=>showProfGrid=v);
-
-// Header buttons
-document.getElementById('b-pause').addEventListener('click',()=>{
-  paused=!paused;
-  const b=document.getElementById('b-pause');
-  b.textContent=paused?'▶ Play':'⏸ Pause'; b.classList.toggle('on',paused);
-});
-document.getElementById('b-freeze').addEventListener('click',()=>{
-  frozen=!frozen; document.getElementById('b-freeze').classList.toggle('on',frozen);
-});
-document.getElementById('b-addpt').addEventListener('click',()=>{
-  if(sources.length>=6) return;
-  const i=sources.length;
-  sources.push(mkPoint(snap(W*0.3+Math.random()*W*0.4), snap(H*0.3+Math.random()*H*0.4), i));
-  selSrc=sources.length-1; editWalls=false; rebuildSrcUI();
-});
-document.getElementById('b-addpw').addEventListener('click',()=>{
-  if(sources.length>=6) return;
-  sources.push(mkPlane(sources.length)); selSrc=sources.length-1; editWalls=false; rebuildSrcUI();
-});
-document.getElementById('b-addwall').addEventListener('click',()=>{
-  walls.push(mkWall()); selWall=walls.length-1; editWalls=true; rebuildSrcUI();
-});
-document.getElementById('b-clear').addEventListener('click',()=>{
-  sources=[]; walls=[]; selSrc=0; selWall=0; editWalls=false; rebuildSrcUI();
-});
-
-// Main tab switching
-document.querySelectorAll('#tab-bar .tab').forEach(tab=>{
-  tab.addEventListener('click',()=>{
-    document.querySelectorAll('#tab-bar .tab').forEach(t=>t.classList.remove('on'));
-    document.querySelectorAll('.tpane').forEach(p=>p.classList.remove('on'));
-    tab.classList.add('on');
-    document.getElementById('pane-'+tab.dataset.t).classList.add('on');
-  });
-});
-
-// Profile mode buttons
-document.querySelectorAll('#prof-modes [data-m]').forEach(btn=>{
-  btn.addEventListener('click',()=>{
-    document.querySelectorAll('#prof-modes [data-m]').forEach(b=>b.classList.remove('on'));
-    btn.classList.add('on'); profMode=btn.dataset.m;
-  });
-});
-
-
-// ─────────────────────────────────────────────────────────────
-// PRESETS
-// ─────────────────────────────────────────────────────────────
-const PRESETS = [
-  { name: "Young's slits", fn() {
-    walls=[mkWall()]; walls[0].xFrac=0.5; walls[0].slits=[{pos:0.38,width:16},{pos:0.62,width:16}];
-    const pw=mkPlane(0); pw.angle=0; pw.side='right'; pw.cx=W*0.08; pw.cy=H*0.5;
-    sources=[pw]; selSrc=0; selWall=0; editWalls=false; rebuildSrcUI();
-  }},
-  { name: "Single slit", fn() {
-    walls=[mkWall()]; walls[0].xFrac=0.5; walls[0].slits=[{pos:0.5,width:30}];
-    const pw=mkPlane(0); pw.angle=0; pw.side='right'; pw.cx=W*0.08; pw.cy=H*0.5;
-    sources=[pw]; selSrc=0; editWalls=false; rebuildSrcUI();
-  }},
-  { name: "Triple slit", fn() {
-    walls=[mkWall()]; walls[0].xFrac=0.5; walls[0].slits=[{pos:0.32,width:14},{pos:0.5,width:14},{pos:0.68,width:14}];
-    const pw=mkPlane(0); pw.angle=0; pw.side='right'; pw.cx=W*0.08; pw.cy=H*0.5;
-    sources=[pw]; selSrc=0; editWalls=false; rebuildSrcUI();
-  }},
-  { name: "2 Point sources", fn() {
-    walls=[]; sources=[mkPoint(W*0.5,H*0.35,0), mkPoint(W*0.5,H*0.65,1)];
-    selSrc=0; editWalls=false; rebuildSrcUI();
-  }},
-  { name: "Michelson rings", fn() {
-    walls=[]; sources=[mkPoint(W*0.5+2,H*0.5+2,0), mkPoint(W*0.5-2,H*0.5-2,1)];
-    selSrc=0; editWalls=false; rebuildSrcUI();
-  }},
-  { name: "Red + Green", fn() {
-    walls=[];
-    const a=mkPoint(W*0.4,H*0.5,0); a.lightSrc='laser_red';
-    const b=mkPoint(W*0.6,H*0.5,1); b.lightSrc='laser_green';
-    sources=[a,b]; wavelength=70;
-    const sl=document.getElementById('sl-wl'); if(sl){sl.value=70;document.getElementById('vl-wl').textContent='70px';}
-    colorMap='spectral'; const cm=document.getElementById('sel-cmap'); if(cm) cm.value='spectral';
-    selSrc=0; editWalls=false; rebuildSrcUI();
-  }},
-  { name: "Vortex 6", fn() {
-    walls=[]; sources=[]; const r=Math.min(W,H)*0.18;
-    for(let i=0;i<6;i++){const a=i/6*TAU; const s=mkPoint(W/2+Math.cos(a)*r,H/2+Math.sin(a)*r,i); s.phase=i*60; sources.push(s);}
-    selSrc=0; editWalls=false; rebuildSrcUI();
-  }},
-  { name: "2 Plane waves", fn() {
-    walls=[];
-    const a=mkPlane(0); a.angle=20; a.cx=W*0.5; a.cy=H*0.5; a.side='both';
-    const b=mkPlane(1); b.angle=160;b.cx=W*0.5; b.cy=H*0.5; b.side='both';
-    sources=[a,b]; selSrc=0; editWalls=false; rebuildSrcUI();
-  }},
+// ─── PRESETS ──────────────────────────────────────────────────
+const PRESETS=[
+  {name:"Young's slits",fn(){walls=[mkWall()];walls[0].xFrac=0.5;walls[0].slits=[{pos:0.38,width:16},{pos:0.62,width:16}];const pw=mkPlane(0);pw.angle=0;pw.side='right';pw.cx=W*0.08;pw.cy=H*0.5;sources=[pw];selSrc=0;selWall=0;editWalls=false;rebuildSrcUI();}},
+  {name:"Single slit",fn(){walls=[mkWall()];walls[0].xFrac=0.5;walls[0].slits=[{pos:0.5,width:30}];const pw=mkPlane(0);pw.angle=0;pw.side='right';pw.cx=W*0.08;pw.cy=H*0.5;sources=[pw];selSrc=0;editWalls=false;rebuildSrcUI();}},
+  {name:"Triple slit",fn(){walls=[mkWall()];walls[0].xFrac=0.5;walls[0].slits=[{pos:0.32,width:14},{pos:0.5,width:14},{pos:0.68,width:14}];const pw=mkPlane(0);pw.angle=0;pw.side='right';pw.cx=W*0.08;pw.cy=H*0.5;sources=[pw];selSrc=0;editWalls=false;rebuildSrcUI();}},
+  {name:"2 Point sources",fn(){walls=[];sources=[mkPoint(W*0.5,H*0.35,0),mkPoint(W*0.5,H*0.65,1)];selSrc=0;editWalls=false;rebuildSrcUI();}},
+  {name:"Michelson rings",fn(){walls=[];sources=[mkPoint(W*0.5+2,H*0.5+2,0),mkPoint(W*0.5-2,H*0.5-2,1)];selSrc=0;editWalls=false;rebuildSrcUI();}},
+  {name:"Red + Green",fn(){walls=[];const a=mkPoint(W*0.4,H*0.5,0);a.lightSrc='laser_red';const b=mkPoint(W*0.6,H*0.5,1);b.lightSrc='laser_green';sources=[a,b];wavelength=70;const sl=document.getElementById('sl-wl');if(sl){sl.value=70;document.getElementById('vl-wl').textContent='70px';}colorMap='spectral';const cm=document.getElementById('sel-cmap');if(cm)cm.value='spectral';selSrc=0;editWalls=false;rebuildSrcUI();}},
+  {name:"Vortex 6",fn(){walls=[];sources=[];const r=Math.min(W,H)*0.18;for(let i=0;i<6;i++){const a=i/6*TAU;const s=mkPoint(W/2+Math.cos(a)*r,H/2+Math.sin(a)*r,i);s.phase=i*60;sources.push(s);}selSrc=0;editWalls=false;rebuildSrcUI();}},
+  {name:"2 Plane waves",fn(){walls=[];const a=mkPlane(0);a.angle=20;a.cx=W*0.5;a.cy=H*0.5;a.side='both';const b=mkPlane(1);b.angle=160;b.cx=W*0.5;b.cy=H*0.5;b.side='both';sources=[a,b];selSrc=0;editWalls=false;rebuildSrcUI();}},
 ];
+(()=>{const grid=document.getElementById('pgrid');PRESETS.forEach(p=>{const b=document.createElement('button');b.className='btn';b.textContent=p.name;b.addEventListener('click',p.fn);grid.appendChild(b);});})();
 
-(() => {
-  const grid=document.getElementById('pgrid');
-  PRESETS.forEach(p=>{
-    const b=document.createElement('button'); b.className='btn'; b.textContent=p.name;
-    b.addEventListener('click',p.fn); grid.appendChild(b);
-  });
-})();
-
-
-// ─────────────────────────────────────────────────────────────
-// CANVAS INTERACTION  (drag sources / walls, tap to move)
-// ─────────────────────────────────────────────────────────────
-let dragging=false, dragSrc=-1, dragWall=-1, offX=0, offY=0;
-
-function canvasXY(e) {
-  const rect=canvas.getBoundingClientRect(), sx=W/rect.width, sy=H/rect.height;
-  const pt=e.touches?e.touches[0]:e;
-  return { x:(pt.clientX-rect.left)*sx, y:(pt.clientY-rect.top)*sy };
-}
-
-function nearestSource(x, y, radius=26) {
-  for(let i=0;i<sources.length;i++){
-    const s=sources[i], sx=s.type==='point'?s.x:s.cx, sy=s.type==='point'?s.y:s.cy;
-    if(Math.hypot(sx-x,sy-y)<radius) return i;
-  }
-  return -1;
-}
-
-function nearestWall(x) {
-  for(let i=0;i<walls.length;i++) if(Math.abs(walls[i].xFrac*W-x)<18) return i;
-  return -1;
-}
-
-canvas.addEventListener('mousemove',e=>{
-  const r=canvas.getBoundingClientRect();
-  curX=(e.clientX-r.left)*(W/r.width); curY=(e.clientY-r.top)*(H/r.height); curOnCanvas=true;
-});
-canvas.addEventListener('mouseleave',()=>{
-  curOnCanvas=false; document.getElementById('cursor-hud').textContent='move mouse over pattern';
-});
-canvas.addEventListener('touchmove',e=>{
-  const r=canvas.getBoundingClientRect();
-  curX=(e.touches[0].clientX-r.left)*(W/r.width);
-  curY=(e.touches[0].clientY-r.top)*(H/r.height); curOnCanvas=true;
-},{passive:true});
-
-canvas.addEventListener('pointerdown',e=>{
-  e.preventDefault();
-  const {x,y}=canvasXY(e);
-  const nw=nearestWall(x);
-  if(editWalls && nw>=0){ dragging=true; dragWall=nw; dragSrc=-1; selWall=nw; rebuildWallUI(); return; }
-  const ns=nearestSource(x,y);
-  if(ns>=0){
-    dragging=true; dragSrc=ns; dragWall=-1; selSrc=ns; editWalls=false;
-    const s=sources[ns]; offX=x-(s.type==='point'?s.x:s.cx); offY=y-(s.type==='point'?s.y:s.cy);
-    rebuildSrcUI(); return;
-  }
-  // Tap to move selected source / wall
-  if(!editWalls && sources.length>0){
-    const s=sources[selSrc];
-    if(s.type==='point'){s.x=snap(x);s.y=snap(y);}else{s.cx=snap(x);s.cy=snap(y);}
-    rebuildSrcUI();
-  } else if(editWalls && walls.length>0){
-    walls[selWall].xFrac=Math.max(0,Math.min(1,x/W)); rebuildWallUI();
-  }
-});
-
-canvas.addEventListener('pointermove',e=>{
-  e.preventDefault(); if(!dragging) return;
-  const {x,y}=canvasXY(e);
-  if(dragWall>=0 && dragWall<walls.length){ walls[dragWall].xFrac=Math.max(0,Math.min(1,x/W)); rebuildWallUI(); return; }
-  if(dragSrc>=0 && dragSrc<sources.length){
-    const s=sources[dragSrc];
-    if(s.type==='point'){s.x=snap(x-offX);s.y=snap(y-offY);}else{s.cx=snap(x-offX);s.cy=snap(y-offY);}
-    rebuildSrcUI();
-  }
-});
-
-canvas.addEventListener('pointerup',    ()=>{dragging=false;dragSrc=-1;dragWall=-1;});
+// ─── CANVAS INTERACTION ───────────────────────────────────────
+let dragging=false,dragSrc=-1,dragWall=-1,offX=0,offY=0;
+function canvasXY(e){const rect=canvas.getBoundingClientRect(),sx=W/rect.width,sy=H/rect.height;const pt=e.touches?e.touches[0]:e;return{x:(pt.clientX-rect.left)*sx,y:(pt.clientY-rect.top)*sy};}
+function nearestSource(x,y,radius=26){for(let i=0;i<sources.length;i++){const s=sources[i],sx=s.type==='point'?s.x:s.cx,sy=s.type==='point'?s.y:s.cy;if(Math.hypot(sx-x,sy-y)<radius)return i;}return -1;}
+function nearestWall(x){for(let i=0;i<walls.length;i++)if(Math.abs(walls[i].xFrac*W-x)<18)return i;return -1;}
+canvas.addEventListener('mousemove',e=>{const r=canvas.getBoundingClientRect();curX=(e.clientX-r.left)*(W/r.width);curY=(e.clientY-r.top)*(H/r.height);curOnCanvas=true;});
+canvas.addEventListener('mouseleave',()=>{curOnCanvas=false;document.getElementById('cursor-hud').textContent='move mouse over pattern';});
+canvas.addEventListener('touchmove',e=>{const r=canvas.getBoundingClientRect();curX=(e.touches[0].clientX-r.left)*(W/r.width);curY=(e.touches[0].clientY-r.top)*(H/r.height);curOnCanvas=true;},{passive:true});
+canvas.addEventListener('pointerdown',e=>{e.preventDefault();const{x,y}=canvasXY(e);const nw=nearestWall(x);if(editWalls&&nw>=0){dragging=true;dragWall=nw;dragSrc=-1;selWall=nw;rebuildWallUI();return;}const ns=nearestSource(x,y);if(ns>=0){dragging=true;dragSrc=ns;dragWall=-1;selSrc=ns;editWalls=false;const s=sources[ns];offX=x-(s.type==='point'?s.x:s.cx);offY=y-(s.type==='point'?s.y:s.cy);rebuildSrcUI();return;}if(!editWalls&&sources.length>0){const s=sources[selSrc];if(s.type==='point'){s.x=snap(x);s.y=snap(y);}else{s.cx=snap(x);s.cy=snap(y);}rebuildSrcUI();}else if(editWalls&&walls.length>0){walls[selWall].xFrac=Math.max(0,Math.min(1,x/W));rebuildWallUI();}});
+canvas.addEventListener('pointermove',e=>{e.preventDefault();if(!dragging)return;const{x,y}=canvasXY(e);if(dragWall>=0&&dragWall<walls.length){walls[dragWall].xFrac=Math.max(0,Math.min(1,x/W));rebuildWallUI();return;}if(dragSrc>=0&&dragSrc<sources.length){const s=sources[dragSrc];if(s.type==='point'){s.x=snap(x-offX);s.y=snap(y-offY);}else{s.cx=snap(x-offX);s.cy=snap(y-offY);}rebuildSrcUI();}});
+canvas.addEventListener('pointerup',()=>{dragging=false;dragSrc=-1;dragWall=-1;});
 canvas.addEventListener('pointercancel',()=>{dragging=false;dragSrc=-1;dragWall=-1;});
 
-
-// ─────────────────────────────────────────────────────────────
-// INIT
-// ─────────────────────────────────────────────────────────────
+// ─── INIT ─────────────────────────────────────────────────────
 window.addEventListener('resize',()=>{resize();rebuildSrcUI();});
 resize();
-PRESETS[0].fn(); // Start with Young's double-slit
+if(!initGL()){const banner=document.createElement('div');banner.style.cssText='position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:#ff3d7f;font-size:14px;text-align:center;';banner.textContent='WebGL not available. Try Chrome or Firefox.';document.getElementById('cwrap').appendChild(banner);}
+PRESETS[0].fn();
 render();
 </script>
 </body>
