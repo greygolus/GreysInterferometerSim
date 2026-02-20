@@ -513,7 +513,7 @@ function buildFragSrc(NS, NW) {
 float wNorm${wi}(vec2 p){vec4 w=u_wallA[${wi}];float wx=w.x*u_res.x,a=w.y;return(p.x-wx)*cos(a)+(p.y-u_res.y*0.5)*sin(a);}
 float wProj${wi}(vec2 p){vec4 w=u_wallA[${wi}];float wx=w.x*u_res.x,a=w.y,lx=-sin(a),ly=cos(a),L=length(u_res);return((p.x-wx)*lx+(p.y-u_res.y*0.5)*ly+L*0.5)/L;}
 bool wSolid${wi}(vec2 p){vec4 w=u_wallA[${wi}];if(w.w<0.5)return false;if(abs(wNorm${wi}(p))>w.z*0.5)return false;float frac=wProj${wi}(p);${slitChecks}return true;}
-bool wCuts${wi}(vec2 s,vec2 p){vec4 w=u_wallA[${wi}];if(w.w<0.5)return false;float ss=wNorm${wi}(s),ps=wNorm${wi}(p);if(ss*ps>=0.0)return false;float a=w.y;vec2 n=vec2(cos(a),sin(a));float d=dot(p-s,n);if(abs(d)<1e-6)return false;float wx=w.x*u_res.x;float t=dot(vec2(wx,u_res.y*0.5)-s,n)/d;if(t<0.0||t>1.0)return false;float frac=wProj${wi}(s+t*(p-s));${slitChecks}return false;}`;
+bool wCuts${wi}(vec2 s,vec2 p){vec4 w=u_wallA[${wi}];if(w.w<0.5)return false;float ss=wNorm${wi}(s),ps=wNorm${wi}(p);if(ss*ps>=0.0)return false;float a=w.y;vec2 n=vec2(cos(a),sin(a));float d=dot(p-s,n);if(abs(d)<1e-6)return false;float wx=w.x*u_res.x;float t=dot(vec2(wx,u_res.y*0.5)-s,n)/d;if(t<0.0||t>1.0)return false;float frac=wProj${wi}(s+t*(p-s));${slitChecks}return true;}`;
   }
 
   const allWallSnippets = Array.from({length:NW}, (_,wi) => wallSnippets(wi)).join('\n');
@@ -522,14 +522,22 @@ bool wCuts${wi}(vec2 s,vec2 p){vec4 w=u_wallA[${wi}];if(w.w<0.5)return false;flo
 
   // Per-source active check — inlined per source index, no function parameter indexing
   function srcActiveInline(i) {
-    // type stored in u_srcA[i].x: 0=point,1=plane,2=huygens
-    // For huygens: check forward side of its wall (wall index in u_srcD[i].x)
+    // type 0=point: pathBlocked from source pos to pixel
+    // type 1=plane: project a point far upstream along wave normal, pathBlocked from there to pixel
+    //               this correctly shadows pixels behind solid wall sections
+    // type 2=huygens: check forward side of its wall
     const wallNormForHuyg = Array.from({length:NW}, (_,wi) =>
       `if(abs(u_srcD[${i}].x-${wi}.0)<0.5)wn${i}=wNorm${wi}(p);`
     ).join('');
+    const pathBlockPerWall = Array.from({length:NW},(_,wi)=>`if(wCuts${wi}(src${i},p))blk${i}=true;`).join('');
     return `float act${i};{
   if(u_srcA[${i}].x>1.5){float wn${i}=0.0;${wallNormForHuyg}act${i}=wn${i}*u_srcC[${i}].w>=0.0?1.0:0.0;}
-  else{bool blk${i}=false;${Array.from({length:NW},(_,wi)=>`if(wCuts${wi}(u_srcA[${i}].yz,p))blk${i}=true;`).join('')}act${i}=blk${i}?0.0:1.0;}
+  else{
+    vec2 src${i};
+    if(u_srcA[${i}].x>0.5){vec2 nv${i}=vec2(cos(u_srcB[${i}].y),sin(u_srcB[${i}].y));src${i}=p-nv${i}*(u_res.x+u_res.y);}
+    else{src${i}=u_srcA[${i}].yz;}
+    bool blk${i}=false;${pathBlockPerWall}act${i}=blk${i}?0.0:1.0;
+  }
 }`;
   }
 
