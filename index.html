@@ -492,100 +492,89 @@ const MAX_WALLS=4;
 const VERT_SRC=`attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0.0,1.0);}`;
 
 function buildFragSrc(NS, NW) {
-  // NS, NW are JS ints, baked as GLSL integer literals where needed
-  // Slit data: u_slitData[wi*4+si] = vec4(pos, halfWidthFrac, 0, 0)
-  // u_slitCount = vec4 with count per wall (x=w0,y=w1,z=w2,w=w3)
-  // Source packing:
-  //   sA = vec4(type, x, y, amp)          type: 0=point,1=plane,2=huyg
-  //   sB = vec4(phase, angle, side, wlPx) side: -1=right,0=both,1=left
-  //   sC = vec4(r, g, b, fwd_or_wlNm)    fwd for huygens, wlNm otherwise
-  //   sD = vec4(wallIdx,0,0,0)            wall index for huygens only
-  const NSlit = NW * 4;
+  // GLSL ES 1.0 strict: NO non-constant array indexing anywhere.
+  // Solution: inline every wall and source operation using JS template generation.
+  // No function takes an index parameter. Everything is per-literal-constant.
+
+  // Per-wall helper snippets — each wall index is a JS literal baked into GLSL
+  // wNorm_N(p)  : signed distance from wall N (normal direction)
+  // wProj_N(p)  : fractional position along wall N
+  // wSolid_N(p) : bool — wall N blocks p (false if open/slit passes)
+  // wCuts_N(s,p): bool — wall N cuts segment s→p
+  function wallSnippets(wi, sc) {
+    // sc = JS string for the slit-count component: 'u_sc.x' etc
+    const scComp = ['u_sc.x','u_sc.y','u_sc.z','u_sc.w'][wi];
+    // slit indices for this wall: wi*4 .. wi*4+3
+    const slitChecks = Array.from({length:4}, (_,si) => {
+      const idx = wi*4+si;
+      return `if(float(${si})<${scComp}){vec4 sl${idx}=u_slitData[${idx}];if(frac>=sl${idx}.x-sl${idx}.y&&frac<=sl${idx}.x+sl${idx}.y)return false;}`;
+    }).join('');
+    return `
+float wNorm${wi}(vec2 p){vec4 w=u_wallA[${wi}];float wx=w.x*u_res.x,a=w.y;return(p.x-wx)*cos(a)+(p.y-u_res.y*0.5)*sin(a);}
+float wProj${wi}(vec2 p){vec4 w=u_wallA[${wi}];float wx=w.x*u_res.x,a=w.y,lx=-sin(a),ly=cos(a),L=length(u_res);return((p.x-wx)*lx+(p.y-u_res.y*0.5)*ly+L*0.5)/L;}
+bool wSolid${wi}(vec2 p){vec4 w=u_wallA[${wi}];if(w.w<0.5)return false;if(abs(wNorm${wi}(p))>w.z*0.5)return false;float frac=wProj${wi}(p);${slitChecks}return true;}
+bool wCuts${wi}(vec2 s,vec2 p){vec4 w=u_wallA[${wi}];if(w.w<0.5)return false;float ss=wNorm${wi}(s),ps=wNorm${wi}(p);if(ss*ps>=0.0)return false;float a=w.y;vec2 n=vec2(cos(a),sin(a));float d=dot(p-s,n);if(abs(d)<1e-6)return false;float wx=w.x*u_res.x;float t=dot(vec2(wx,u_res.y*0.5)-s,n)/d;if(t<0.0||t>1.0)return false;float frac=wProj${wi}(s+t*(p-s));${slitChecks}return false;}`;
+  }
+
+  const allWallSnippets = Array.from({length:NW}, (_,wi) => wallSnippets(wi)).join('\n');
+  const isBlockedBody = Array.from({length:NW}, (_,wi) => `if(wSolid${wi}(p))return true;`).join('');
+  const pathBlockedBody = Array.from({length:NW}, (_,wi) => `if(wCuts${wi}(s,p))return true;`).join('');
+
+  // Per-source active check — inlined per source index, no function parameter indexing
+  function srcActiveInline(i) {
+    // type stored in u_srcA[i].x: 0=point,1=plane,2=huygens
+    // For huygens: check forward side of its wall (wall index in u_srcD[i].x)
+    const wallNormForHuyg = Array.from({length:NW}, (_,wi) =>
+      `if(abs(u_srcD[${i}].x-${wi}.0)<0.5)wn${i}=wNorm${wi}(p);`
+    ).join('');
+    return `float act${i};{
+  if(u_srcA[${i}].x>1.5){float wn${i}=0.0;${wallNormForHuyg}act${i}=wn${i}*u_srcC[${i}].w>=0.0?1.0:0.0;}
+  else{bool blk${i}=false;${Array.from({length:NW},(_,wi)=>`if(wCuts${wi}(u_srcA[${i}].yz,p))blk${i}=true;`).join('')}act${i}=blk${i}?0.0:1.0;}
+}`;
+  }
+
+  // Per-source wave contribution — fully inlined, no index param
+  function srcFInline(i, kvar, omvar) {
+    return `float f${i};{vec4 sA=u_srcA[${i}],sB=u_srcB[${i}];float tp=sA.x,ph=sB.x,ang=sB.y,side=sB.z,dmp=1.0;
+  if(tp<0.5||tp>1.5){float r=length(p-sA.yz)+1e-5;if(u_damp>0.0)dmp=exp(-r*u_damp);f${i}=sA.w*dmp*sin(${kvar}*r-${omvar}*u_time*60.0+ph);}
+  else{vec2 nv=vec2(cos(ang),sin(ang));float d=dot(p-sA.yz,nv);float r=abs(d)+1e-5;if(u_damp>0.0)dmp=exp(-r*u_damp);float sv=(side<-0.5&&d<0.0)?0.0:(side>0.5&&d>0.0)?0.0:1.0;f${i}=sA.w*dmp*sin(${kvar}*r-${omvar}*u_time*60.0+ph)*sv;}
+}`;
+  }
+
+  function pLenInline(i) {
+    return `float pl${i};{vec4 sA=u_srcA[${i}],sB=u_srcB[${i}];if(sA.x>0.5&&sA.x<1.5){vec2 nv=vec2(cos(sB.y),sin(sB.y));pl${i}=abs(dot(p-sA.yz,nv));}else pl${i}=length(p-sA.yz)+1e-5;}`;
+  }
+
+  // Spectral main body
+  const spectralBody = Array.from({length:NS}, (_,i) => `
+  ${srcActiveInline(i)}
+  float ki${i}=TAU/u_srcB[${i}].w;
+  ${srcFInline(i, `ki${i}`, `ki${i}`)}
+  float Ii${i}=clamp((u_bg+(1.0-u_bg)*fringeF(f${i}*act${i}))*u_bright*u_srcA[${i}].w,0.0,1.0);
+  col+=u_srcC[${i}].rgb*Ii${i}*act${i};`).join('');
+
+  // Superposition main body
+  const superBody = Array.from({length:NS}, (_,i) => `
+  ${srcActiveInline(i)}
+  ${srcFInline(i, 'k', 'om')}
+  amp+=f${i}*act${i}; nAct+=act${i};`).join('');
+
+  // OPD coherence body
+  const opdBody = Array.from({length:NS}, (_,i) => `
+  if(u_srcA[${i}].x<1.5){bool oblk${i}=false;${Array.from({length:NW},(_,wi)=>`if(wCuts${wi}(u_srcA[${i}].yz,p))oblk${i}=true;`).join('')}if(!oblk${i}){${pLenInline(i)}if(got0<0.5){r0=pl${i};got0=1.0;}else maxOPD=max(maxOPD,abs(r0-pl${i}));}}`).join('');
+
   return `precision highp float;
 uniform vec2  u_res;
 uniform float u_time,u_wl,u_bright,u_bg,u_gamma,u_damp,u_sharp;
 uniform float u_cmap,u_fringe,u_spos,u_inv,u_coh;
 uniform vec4  u_srcA[${NS}],u_srcB[${NS}],u_srcC[${NS}],u_srcD[${NS}];
 uniform vec4  u_wallA[${NW}];
-uniform vec4  u_slitData[${NSlit}];
-uniform vec4  u_sc; // slit counts per wall
+uniform vec4  u_slitData[${NW*4}];
+uniform vec4  u_sc;
 const float PI=3.14159265358979,TAU=6.28318530717959;
-
-float wallNorm(int wi,vec2 p){
-  vec4 w=u_wallA[wi];
-  float wx=w.x*u_res.x,a=w.y;
-  return(p.x-wx)*cos(a)+(p.y-u_res.y*0.5)*sin(a);
-}
-float wallProj(int wi,vec2 p){
-  vec4 w=u_wallA[wi];
-  float wx=w.x*u_res.x,a=w.y,lx=-sin(a),ly=cos(a),L=length(u_res);
-  return((p.x-wx)*lx+(p.y-u_res.y*0.5)*ly+L*0.5)/L;
-}
-float slitCt(int wi){
-  if(wi==0)return u_sc.x;
-  if(wi==1)return u_sc.y;
-  if(wi==2)return u_sc.z;
-  return u_sc.w;
-}
-// Check if wall wi blocks point p
-bool wallSolid(int wi,vec2 p){
-  vec4 w=u_wallA[wi];
-  if(w.w<0.5)return false;
-  if(abs(wallNorm(wi,p))>w.z*0.5)return false;
-  float frac=wallProj(wi,p);
-  float nc=slitCt(wi);
-  ${Array.from({length:NSlit},(_,si)=>{
-    const wii=Math.floor(si/4);
-    return `if(${si}<int(nc+0.5)&&${wii}==wi){vec4 sl=u_slitData[${si}];if(frac>=sl.x-sl.y&&frac<=sl.x+sl.y)return false;}`;
-  }).join('')}
-  return true;
-}
-bool isBlocked(vec2 p){
-  ${Array.from({length:NW},(_,wi)=>`if(wallSolid(${wi},p))return true;`).join('')}
-  return false;
-}
-bool wallCuts(int wi,vec2 s,vec2 p){
-  vec4 w=u_wallA[wi];
-  if(w.w<0.5)return false;
-  float ss=wallNorm(wi,s),ps=wallNorm(wi,p);
-  if(ss*ps>=0.0)return false;
-  float a=w.y; vec2 n=vec2(cos(a),sin(a));
-  float d=dot(p-s,n); if(abs(d)<1e-6)return false;
-  float wx=w.x*u_res.x;
-  float t=dot(vec2(wx,u_res.y*0.5)-s,n)/d;
-  if(t<0.0||t>1.0)return false;
-  float frac=wallProj(wi,s+t*(p-s));
-  float nc=slitCt(wi);
-  ${Array.from({length:NSlit},(_,si)=>{
-    const wii=Math.floor(si/4);
-    return `if(${si}<int(nc+0.5)&&${wii}==wi){vec4 sl=u_slitData[${si}];if(frac>=sl.x-sl.y&&frac<=sl.x+sl.y)return false;}`;
-  }).join('')}
-  return true;
-}
-bool pathBlocked(vec2 s,vec2 p){
-  ${Array.from({length:NW},(_,wi)=>`if(wallCuts(${wi},s,p))return true;`).join('')}
-  return false;
-}
-float srcF(vec4 sA,vec4 sB,vec2 p,float k,float om){
-  float tp=sA.x,amp=sA.w,ph=sB.x,ang=sB.y,side=sB.z,dmp=1.0;
-  if(tp<0.5||tp>1.5){ // point or huygens (type 0 or 2)
-    vec2 sp=sA.yz; float r=length(p-sp)+1e-5;
-    if(u_damp>0.0)dmp=exp(-r*u_damp);
-    return amp*dmp*sin(k*r-om*u_time*60.0+ph);
-  } else { // plane (type 1)
-    vec2 cn=sA.yz,nv=vec2(cos(ang),sin(ang));
-    float d=dot(p-cn,nv);
-    if(side<-0.5&&d<0.0)return 0.0;
-    if(side>0.5&&d>0.0)return 0.0;
-    float r=abs(d)+1e-5;
-    if(u_damp>0.0)dmp=exp(-r*u_damp);
-    return amp*dmp*sin(k*r-om*u_time*60.0+ph);
-  }
-}
-float pLen(vec4 sA,vec4 sB,vec2 p){
-  if(sA.x>0.5&&sA.x<1.5){vec2 nv=vec2(cos(sB.y),sin(sB.y));return abs(dot(p-sA.yz,nv));}
-  return length(p-sA.yz)+1e-5;
-}
+${allWallSnippets}
+bool isBlocked(vec2 p){${isBlockedBody}return false;}
+bool pathBlocked(vec2 s,vec2 p){${pathBlockedBody}return false;}
 float fringeF(float v){
   if(u_fringe<0.5){float c=cos(v*PI)*0.5+0.5;return pow(c,u_sharp);}
   if(u_fringe<1.5)return cos(v*PI)*0.5+0.5;
@@ -593,66 +582,47 @@ float fringeF(float v){
   if(u_fringe<3.5){float s2=sin(v*PI);return pow(s2*s2,u_sharp*0.5);}
   float w2=mod(mod(v,2.0)+2.0,2.0)-1.0;return exp(-w2*w2*u_sharp*2.0);
 }
-vec3 hsl(float h,float s,float l){
+vec3 hsl2rgb(float h,float s,float l){
   float q=l<0.5?l*(1.0+s):l+s-l*s,p2=2.0*l-q;
-  vec3 c;
-  float t; float v2;
-  t=h+1.0/3.0;if(t>1.0)t-=1.0;
-  if(t<1.0/6.0)v2=p2+(q-p2)*6.0*t;else if(t<0.5)v2=q;else if(t<2.0/3.0)v2=p2+(q-p2)*(2.0/3.0-t)*6.0;else v2=p2;c.r=v2;
-  t=h;
-  if(t<1.0/6.0)v2=p2+(q-p2)*6.0*t;else if(t<0.5)v2=q;else if(t<2.0/3.0)v2=p2+(q-p2)*(2.0/3.0-t)*6.0;else v2=p2;c.g=v2;
-  t=h-1.0/3.0;if(t<0.0)t+=1.0;
-  if(t<1.0/6.0)v2=p2+(q-p2)*6.0*t;else if(t<0.5)v2=q;else if(t<2.0/3.0)v2=p2+(q-p2)*(2.0/3.0-t)*6.0;else v2=p2;c.b=v2;
-  return c;
+  float tr=h+1.0/3.0; if(tr>1.0)tr-=1.0;
+  float tg=h;
+  float tb=h-1.0/3.0; if(tb<0.0)tb+=1.0;
+  float r2,g2,b2;
+  if(tr<1.0/6.0)r2=p2+(q-p2)*6.0*tr;else if(tr<0.5)r2=q;else if(tr<2.0/3.0)r2=p2+(q-p2)*(2.0/3.0-tr)*6.0;else r2=p2;
+  if(tg<1.0/6.0)g2=p2+(q-p2)*6.0*tg;else if(tg<0.5)g2=q;else if(tg<2.0/3.0)g2=p2+(q-p2)*(2.0/3.0-tg)*6.0;else g2=p2;
+  if(tb<1.0/6.0)b2=p2+(q-p2)*6.0*tb;else if(tb<0.5)b2=q;else if(tb<2.0/3.0)b2=p2+(q-p2)*(2.0/3.0-tb)*6.0;else b2=p2;
+  return vec3(r2,g2,b2);
 }
 vec3 cmap(float I){
   if(u_cmap<1.5)return vec3(I,I,I);
   if(u_cmap<2.5)return vec3(0.0,I,0.0);
   if(u_cmap<3.5)return vec3(I,0.0,0.0);
   if(u_cmap<4.5)return vec3(0.0,I*0.3,I);
-  if(u_cmap<5.5)return hsl(I*0.75,1.0,0.5);
-  if(u_cmap<6.5)return hsl((1.0-I)*0.75,0.95,0.5);
+  if(u_cmap<5.5)return hsl2rgb(I*0.75,1.0,0.5);
+  if(u_cmap<6.5)return hsl2rgb((1.0-I)*0.75,0.95,0.5);
   if(u_cmap<7.5)return vec3(min(1.0,I*1.8),max(0.0,(I-0.4)*1.6),0.0);
   if(u_cmap<8.5)return vec3(I*60.0/255.0,I*150.0/255.0,min(1.0,I+40.0/255.0));
   return vec3(I,I*190.0/255.0,I*60.0/255.0);
-}
-// Returns 1.0 if source i contributes to pixel p, 0.0 if blocked
-float srcActive(int i,vec2 p){
-  vec4 sA=u_srcA[i];
-  if(sA.x>1.5){ // huygens
-    float fwd=u_srcC[i].w,wif=u_srcD[i].x,wn=0.0;
-    ${Array.from({length:NW},(_,wi)=>`if(abs(wif-${wi}.0)<0.5)wn=wallNorm(${wi},p);`).join('')}
-    return wn*fwd>=0.0?1.0:0.0;
-  }
-  return pathBlocked(sA.yz,p)?0.0:1.0;
 }
 void main(){
   vec2 p=gl_FragCoord.xy; p.y=u_res.y-p.y;
   if(isBlocked(p)){gl_FragColor=vec4(0.0,0.0,0.0,1.0);return;}
   float k=TAU/u_wl,om=k;
-
-  if(u_cmap<0.5){ // spectral
+  if(u_cmap<0.5){
     vec3 col=vec3(0.0);
-    ${Array.from({length:NS},(_,i)=>`{
-      float act=srcActive(${i},p);
-      float ki=TAU/u_srcB[${i}].w;
-      float f=srcF(u_srcA[${i}],u_srcB[${i}],p,ki,ki)*act;
-      float Ii=clamp((u_bg+(1.0-u_bg)*fringeF(f))*u_bright*u_srcA[${i}].w,0.0,1.0);
-      col+=u_srcC[${i}].rgb*Ii*act;
-    }`).join('')}
+    ${spectralBody}
     float mx=max(max(col.r,col.g),max(col.b,1.0));
     if(u_gamma!=1.0)col=pow(col/mx,vec3(1.0/u_gamma))*mx;
     col=u_inv>0.5?vec3(1.0)-min(col/mx,vec3(1.0)):min(col,vec3(1.0));
     gl_FragColor=vec4(col,1.0);return;
   }
-
   float amp=0.0,nAct=0.0;
-  ${Array.from({length:NS},(_,i)=>`{float act=srcActive(${i},p);amp+=srcF(u_srcA[${i}],u_srcB[${i}],p,k,om)*act;nAct+=act;}`).join('')}
+  ${superBody}
   float N=max(1.0,nAct);
   float I;
   if(u_spos<0.5){
     float r0=0.0,got0=0.0,maxOPD=0.0;
-    ${Array.from({length:NS},(_,i)=>`if(u_srcA[${i}].x<1.5&&!pathBlocked(u_srcA[${i}].yz,p)){float r=pLen(u_srcA[${i}],u_srcB[${i}],p);if(got0<0.5){r0=r;got0=1.0;}else maxOPD=max(maxOPD,abs(r0-r));}`).join('')}
+    ${opdBody}
     float Lc=(u_wl/(1.0-u_coh+0.001))*0.5;
     float env=u_coh>=1.0?1.0:exp(-pow(maxOPD/Lc,2.0));
     I=clamp((u_bg+(1.0-u_bg)*(0.5*(1.0-env)+fringeF(amp/N)*env))*u_bright,0.0,1.0);
