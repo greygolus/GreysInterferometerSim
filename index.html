@@ -482,12 +482,18 @@ function fieldAt(x,y,eSrc,k,omega,t){
 }
 
 // ─── WEBGL SETUP ──────────────────────────────────────────────
-let gl, glProg, glUniforms={};
-const MAX_SRCS=48, MAX_WALLS=4;
+// Shader is generated dynamically with source/wall counts baked in
+// as constants so all loops have compile-time bounds (GLSL ES 1.0).
+let gl, glProg, glUniforms={}, glCompiledForN=-1;
+const MAX_WALLS=4;
 
 const VERT_SRC=`attribute vec2 a_pos;void main(){gl_Position=vec4(a_pos,0.0,1.0);}`;
 
-const FRAG_SRC=`
+function buildFragSrc(nSrc, nWall) {
+  // nSrc and nWall are JS integers baked as GLSL constants
+  const NS = Math.max(nSrc, 1);
+  const NW = Math.max(nWall, 1);
+  return `
 precision highp float;
 uniform vec2  u_res;
 uniform float u_time;
@@ -497,132 +503,198 @@ uniform float u_bgLevel;
 uniform float u_gamma;
 uniform float u_damping;
 uniform float u_sharpness;
-uniform int   u_colorMap;
-uniform int   u_fringeStyle;
-uniform int   u_superpos;
-uniform bool  u_invert;
+uniform float u_colorMap;
+uniform float u_fringeStyle;
+uniform float u_superpos;
+uniform float u_invert;
 uniform float u_coh;
-uniform int   u_nSrc;
-uniform vec4  u_srcA[48];
-uniform vec4  u_srcB[48];
-uniform vec4  u_srcC[48];
-uniform int   u_nHuyg;
-uniform int   u_nWall;
-uniform vec4  u_wallA[4];
-uniform vec4  u_slitData[16];
-uniform int   u_slitCount[4];
+uniform float u_nSrc;
+uniform vec4  u_srcA[${NS}];
+uniform vec4  u_srcB[${NS}];
+uniform vec4  u_srcC[${NS}];
+uniform float u_nWall;
+uniform vec4  u_wallA[${NW}];
+uniform vec4  u_slitData[${NW*4}];
+uniform vec4  u_slitCount;
 const float PI=3.14159265358979;
 const float TAU=6.28318530717959;
 
-float wallNorm(vec4 wA,vec2 p){float wx=wA.x*u_res.x;float a=wA.y;return(p.x-wx)*cos(a)+(p.y-u_res.y*0.5)*sin(a);}
-float wallProj(vec4 wA,vec2 p){float wx=wA.x*u_res.x;float a=wA.y;float lx=-sin(a),ly=cos(a);float L=length(u_res);return((p.x-wx)*lx+(p.y-u_res.y*0.5)*ly+L*0.5)/L;}
-
+float wallNorm(vec4 wA,vec2 p){
+  float wx=wA.x*u_res.x; float a=wA.y;
+  return(p.x-wx)*cos(a)+(p.y-u_res.y*0.5)*sin(a);
+}
+float wallProj(vec4 wA,vec2 p){
+  float wx=wA.x*u_res.x; float a=wA.y;
+  float lx=-sin(a),ly=cos(a); float L=length(u_res);
+  return((p.x-wx)*lx+(p.y-u_res.y*0.5)*ly+L*0.5)/L;
+}
+float slitCountFor(int wi){
+  if(wi==0)return u_slitCount.x;
+  if(wi==1)return u_slitCount.y;
+  if(wi==2)return u_slitCount.z;
+  return u_slitCount.w;
+}
 bool inSlit(int wi,float frac){
-  int base=wi*4;
-  for(int si=0;si<4;si++){if(si>=u_slitCount[wi])break;vec4 sl=u_slitData[base+si];if(frac>=sl.x-sl.y&&frac<=sl.x+sl.y)return true;}
-  return false;
-}
-
-bool isBlocked(vec2 p){
-  for(int wi=0;wi<4;wi++){if(wi>=u_nWall)break;vec4 wA=u_wallA[wi];if(wA.w<0.5)continue;if(abs(wallNorm(wA,p))>wA.z*0.5)continue;if(!inSlit(wi,wallProj(wA,p)))return true;}
-  return false;
-}
-
-bool isPathBlocked(vec2 s,vec2 p){
-  for(int wi=0;wi<4;wi++){
-    if(wi>=u_nWall)break;
-    vec4 wA=u_wallA[wi];if(wA.w<0.5)continue;
-    float ss=wallNorm(wA,s),ps=wallNorm(wA,p);if(ss*ps>=0.0)continue;
-    float a=wA.y;vec2 n=vec2(cos(a),sin(a));float d=dot(p-s,n);if(abs(d)<1e-6)continue;
-    float wx=wA.x*u_res.x;float t=(dot(vec2(wx,u_res.y*0.5)-s,n))/d;if(t<0.0||t>1.0)continue;
-    if(!inSlit(wi,wallProj(wA,s+t*(p-s))))return true;
+  float nc=slitCountFor(wi);
+  for(int si=0;si<${NW*4};si++){
+    if(float(si)>=nc)break;
+    if(si/4!=wi)continue;
+    vec4 sl=u_slitData[si];
+    if(frac>=sl.x-sl.y&&frac<=sl.x+sl.y)return true;
   }
   return false;
 }
-
-float srcFieldAt(int i,vec2 p,float k,float omega){
-  vec4 sA=u_srcA[i];vec4 sB=u_srcB[i];
-  int tp=int(sA.x+0.5);float amp=sA.w,phase=sB.x,angle=sB.y,side=sB.z;
-  float dmp=1.0;
-  if(tp==0||tp==2){vec2 sp=sA.yz;float r=length(p-sp)+1e-5;if(u_damping>0.0)dmp=exp(-r*u_damping);return amp*dmp*sin(k*r-omega*u_time*60.0+phase);}
-  else{vec2 cn=sA.yz;vec2 nv=vec2(cos(angle),sin(angle));float d=dot(p-cn,nv);if(side<-0.5&&d<0.0)return 0.0;if(side>0.5&&d>0.0)return 0.0;float r=abs(d)+1e-5;if(u_damping>0.0)dmp=exp(-r*u_damping);return amp*dmp*sin(k*r-omega*u_time*60.0+phase);}
+bool wallBlocks(vec4 wA,int wi,vec2 p){
+  if(wA.w<0.5)return false;
+  if(abs(wallNorm(wA,p))>wA.z*0.5)return false;
+  return !inSlit(wi,wallProj(wA,p));
 }
-
-float pathLenAt(int i,vec2 p){
-  vec4 sA=u_srcA[i];int tp=int(sA.x+0.5);
-  if(tp==1){float angle=u_srcB[i].y;vec2 cn=sA.yz;vec2 nv=vec2(cos(angle),sin(angle));return abs(dot(p-cn,nv));}
+bool isBlocked(vec2 p){
+  for(int wi=0;wi<${NW};wi++){
+    if(float(wi)>=u_nWall)break;
+    if(wallBlocks(u_wallA[wi],wi,p))return true;
+  }
+  return false;
+}
+bool wallPathBlocks(vec4 wA,int wi,vec2 s,vec2 p){
+  if(wA.w<0.5)return false;
+  float ss=wallNorm(wA,s),ps=wallNorm(wA,p);
+  if(ss*ps>=0.0)return false;
+  float a=wA.y; vec2 n=vec2(cos(a),sin(a));
+  float d=dot(p-s,n); if(abs(d)<1e-6)return false;
+  float wx=wA.x*u_res.x;
+  float t=dot(vec2(wx,u_res.y*0.5)-s,n)/d;
+  if(t<0.0||t>1.0)return false;
+  return !inSlit(wi,wallProj(wA,s+t*(p-s)));
+}
+bool isPathBlocked(vec2 s,vec2 p){
+  for(int wi=0;wi<${NW};wi++){
+    if(float(wi)>=u_nWall)break;
+    if(wallPathBlocks(u_wallA[wi],wi,s,p))return true;
+  }
+  return false;
+}
+float srcField1(vec4 sA,vec4 sB,vec2 p,float k,float omega){
+  float tp=sA.x; float amp=sA.w,phase=sB.x,angle=sB.y,side=sB.z;
+  float dmp=1.0;
+  if(tp<1.5){
+    vec2 sp=sA.yz; float r=length(p-sp)+1e-5;
+    if(u_damping>0.0)dmp=exp(-r*u_damping);
+    return amp*dmp*sin(k*r-omega*u_time*60.0+phase);
+  } else {
+    vec2 cn=sA.yz; vec2 nv=vec2(cos(angle),sin(angle));
+    float d=dot(p-cn,nv);
+    if(side<-0.5&&d<0.0)return 0.0;
+    if(side>0.5&&d>0.0)return 0.0;
+    float r=abs(d)+1e-5;
+    if(u_damping>0.0)dmp=exp(-r*u_damping);
+    return amp*dmp*sin(k*r-omega*u_time*60.0+phase);
+  }
+}
+float pathLen1(vec4 sA,vec4 sB,vec2 p){
+  if(sA.x>0.5&&sA.x<1.5){
+    vec2 nv=vec2(cos(sB.y),sin(sB.y));
+    return abs(dot(p-sA.yz,nv));
+  }
   return length(p-sA.yz)+1e-5;
 }
-
 float fringeF(float v){
-  if(u_fringeStyle==0){float c=cos(v*PI)*0.5+0.5;return pow(c,u_sharpness);}
-  if(u_fringeStyle==1)return cos(v*PI)*0.5+0.5;
-  if(u_fringeStyle==2)return cos(v*PI)>0.0?1.0:0.0;
-  if(u_fringeStyle==3){float s=sin(v*PI);return pow(s*s,u_sharpness*0.5);}
-  if(u_fringeStyle==4){float w=mod(mod(v,2.0)+2.0,2.0)-1.0;return exp(-w*w*u_sharpness*2.0);}
-  return cos(v*PI)*0.5+0.5;
+  float fs=u_fringeStyle;
+  if(fs<0.5){float c=cos(v*PI)*0.5+0.5;return pow(c,u_sharpness);}
+  if(fs<1.5)return cos(v*PI)*0.5+0.5;
+  if(fs<2.5)return cos(v*PI)>0.0?1.0:0.0;
+  if(fs<3.5){float s=sin(v*PI);return pow(s*s,u_sharpness*0.5);}
+  float w=mod(mod(v,2.0)+2.0,2.0)-1.0; return exp(-w*w*u_sharpness*2.0);
 }
-
 vec3 hsl2rgb(float h,float s,float l){
-  float q=l<0.5?l*(1.0+s):l+s-l*s,p=2.0*l-q;
-  vec3 c;
-  for(int i=0;i<3;i++){float t=h+(i==0?1.0/3.0:(i==1?0.0:-1.0/3.0));if(t<0.0)t+=1.0;if(t>1.0)t-=1.0;float v;if(t<1.0/6.0)v=p+(q-p)*6.0*t;else if(t<0.5)v=q;else if(t<2.0/3.0)v=p+(q-p)*(2.0/3.0-t)*6.0;else v=p;if(i==0)c.r=v;else if(i==1)c.g=v;else c.b=v;}
+  float q=l<0.5?l*(1.0+s):l+s-l*s,p2=2.0*l-q;
+  vec3 c=vec3(0.0);
+  float offs[3]; offs[0]=1.0/3.0; offs[1]=0.0; offs[2]=-1.0/3.0;
+  for(int i=0;i<3;i++){
+    float t=h+offs[i]; if(t<0.0)t+=1.0; if(t>1.0)t-=1.0;
+    float v2;
+    if(t<1.0/6.0)v2=p2+(q-p2)*6.0*t;
+    else if(t<0.5)v2=q;
+    else if(t<2.0/3.0)v2=p2+(q-p2)*(2.0/3.0-t)*6.0;
+    else v2=p2;
+    if(i==0)c.r=v2; else if(i==1)c.g=v2; else c.b=v2;
+  }
   return c;
 }
-
 vec3 applyColorMap(float I){
-  if(u_colorMap==1)return vec3(I,I,I);
-  if(u_colorMap==2)return vec3(0.0,I,0.0);
-  if(u_colorMap==3)return vec3(I,0.0,0.0);
-  if(u_colorMap==4)return vec3(0.0,I*0.3,I);
-  if(u_colorMap==5)return hsl2rgb(I*0.75,1.0,0.5);
-  if(u_colorMap==6)return hsl2rgb((1.0-I)*0.75,0.95,0.5);
-  if(u_colorMap==7)return vec3(min(1.0,I*1.8),max(0.0,(I-0.4)*1.6),0.0);
-  if(u_colorMap==8)return vec3(I*60.0/255.0,I*150.0/255.0,min(1.0,I+40.0/255.0));
-  if(u_colorMap==9)return vec3(I,I*190.0/255.0,I*60.0/255.0);
-  return vec3(I,I,I);
+  float cm=u_colorMap;
+  if(cm<1.5)return vec3(I,I,I);
+  if(cm<2.5)return vec3(0.0,I,0.0);
+  if(cm<3.5)return vec3(I,0.0,0.0);
+  if(cm<4.5)return vec3(0.0,I*0.3,I);
+  if(cm<5.5)return hsl2rgb(I*0.75,1.0,0.5);
+  if(cm<6.5)return hsl2rgb((1.0-I)*0.75,0.95,0.5);
+  if(cm<7.5)return vec3(min(1.0,I*1.8),max(0.0,(I-0.4)*1.6),0.0);
+  if(cm<8.5)return vec3(I*60.0/255.0,I*150.0/255.0,min(1.0,I+40.0/255.0));
+  return vec3(I,I*190.0/255.0,I*60.0/255.0);
 }
 
 void main(){
-  vec2 p=gl_FragCoord.xy;p.y=u_res.y-p.y;
+  vec2 p=gl_FragCoord.xy; p.y=u_res.y-p.y;
   if(isBlocked(p)){gl_FragColor=vec4(0.0,0.0,0.0,1.0);return;}
-  float k=TAU/u_wavelength,omega=k;
+  float k=TAU/u_wavelength, omega=k;
 
-  if(u_colorMap==0){
+  // spectral mode
+  if(u_colorMap<0.5){
     vec3 col=vec3(0.0);
-    for(int i=0;i<48;i++){
-      if(i>=u_nSrc)break;
-      vec4 sA=u_srcA[i];vec4 sB=u_srcB[i];vec4 sC=u_srcC[i];
-      int tp=int(sA.x+0.5);bool blocked;
-      if(tp==2){float fwd=sC.w;int wi=int(sB.w+0.5);blocked=(wi>=0&&wi<4)?wallNorm(u_wallA[wi],p)*fwd<0.0:false;}
-      else{blocked=isPathBlocked(sA.yz,p);}
-      if(blocked)continue;
-      float ki=TAU/sB.w;float f=srcFieldAt(i,p,ki,ki);
+    for(int i=0;i<${NS};i++){
+      if(float(i)>=u_nSrc)break;
+      vec4 sA=u_srcA[i],sB=u_srcB[i],sC=u_srcC[i];
+      float tp=sA.x; float active=1.0;
+      if(tp>1.5){
+        // huygens: check fwd side using wallA index stored in sB.w
+        float fwd=sC.w;
+        float wif=sB.w;
+        float wn=0.0;
+        for(int wi=0;wi<${NW};wi++){
+          if(float(wi)==wif) wn=wallNorm(u_wallA[wi],p);
+        }
+        if(wn*fwd<0.0)active=0.0;
+      } else {
+        if(isPathBlocked(sA.yz,p))active=0.0;
+      }
+      float ki=TAU/sB.w;
+      float f=srcField1(sA,sB,p,ki,ki)*active;
       float I=max(0.0,min(1.0,(u_bgLevel+(1.0-u_bgLevel)*fringeF(f))*u_brightness*sA.w));
-      col+=sC.rgb*I;
+      col+=sC.rgb*I*active;
     }
     float mx=max(max(col.r,col.g),max(col.b,1.0));
     if(u_gamma!=1.0)col=pow(col/mx,vec3(1.0/u_gamma))*mx;
-    if(u_invert)col=vec3(1.0)-col/mx;else col=min(col,vec3(1.0));
+    if(u_invert>0.5)col=vec3(1.0)-col/mx; else col=min(col,vec3(1.0));
     gl_FragColor=vec4(col,1.0);return;
   }
 
-  float amp=0.0;int n=0;
-  for(int i=0;i<48;i++){
-    if(i>=u_nSrc)break;
-    vec4 sA=u_srcA[i];int tp=int(sA.x+0.5);bool blocked;
-    if(tp==2){float fwd=u_srcC[i].w;int wi=int(u_srcB[i].w+0.5);blocked=(wi>=0&&wi<4)?wallNorm(u_wallA[wi],p)*fwd<0.0:false;}
-    else{blocked=isPathBlocked(sA.yz,p);}
-    if(blocked)continue;amp+=srcFieldAt(i,p,k,omega);n++;
+  float amp=0.0, nActive=0.0;
+  for(int i=0;i<${NS};i++){
+    if(float(i)>=u_nSrc)break;
+    vec4 sA=u_srcA[i],sB=u_srcB[i],sC=u_srcC[i];
+    float tp=sA.x; float active=1.0;
+    if(tp>1.5){
+      float fwd=sC.w; float wif=sB.w; float wn=0.0;
+      for(int wi=0;wi<${NW};wi++){if(float(wi)==wif)wn=wallNorm(u_wallA[wi],p);}
+      if(wn*fwd<0.0)active=0.0;
+    } else {
+      if(isPathBlocked(sA.yz,p))active=0.0;
+    }
+    amp+=srcField1(sA,sB,p,k,omega)*active;
+    nActive+=active;
   }
-
-  float N=max(1.0,float(n));float I;
-  if(u_superpos==0){
-    float r0=0.0;bool got0=false;float maxOPD=0.0;
-    for(int i=0;i<48;i++){
-      if(i>=u_nSrc)break;vec4 sA=u_srcA[i];int tp=int(sA.x+0.5);if(tp==2)continue;
+  float N=max(1.0,nActive);
+  float I;
+  if(u_superpos<0.5){
+    float r0=0.0,got0=0.0,maxOPD=0.0;
+    for(int i=0;i<${NS};i++){
+      if(float(i)>=u_nSrc)break;
+      vec4 sA=u_srcA[i]; if(sA.x>1.5)continue;
       if(isPathBlocked(sA.yz,p))continue;
-      float r=pathLenAt(i,p);if(!got0){r0=r;got0=true;}else maxOPD=max(maxOPD,abs(r0-r));if(i>=3)break;
+      float r=pathLen1(sA,u_srcB[i],p);
+      if(got0<0.5){r0=r;got0=1.0;}
+      else maxOPD=max(maxOPD,abs(r0-r));
     }
     float Lc=(u_wavelength/(1.0-u_coh+0.001))*0.5;
     float env=(u_coh>=1.0)?1.0:exp(-pow(maxOPD/Lc,2.0));
@@ -631,32 +703,45 @@ void main(){
   } else {
     I=max(0.0,min(1.0,(u_bgLevel+(1.0-u_bgLevel)*fringeF(amp/N))*u_brightness));
   }
-  if(u_gamma!=1.0)I=pow(I,1.0/u_gamma);if(u_invert)I=1.0-I;
+  if(u_gamma!=1.0)I=pow(I,1.0/u_gamma);
+  if(u_invert>0.5)I=1.0-I;
   gl_FragColor=vec4(applyColorMap(I),1.0);
 }`;
+}
 
 function compileShader(gl,type,src){
   const s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);
-  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error('Shader:',gl.getShaderInfoLog(s));return null;}
+  if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)){console.error('Shader error:',gl.getShaderInfoLog(s));return null;}
   return s;
+}
+
+function buildGLProgram(nSrc, nWall){
+  if(glProg) gl.deleteProgram(glProg);
+  glUniforms={};
+  const vert=compileShader(gl,gl.VERTEX_SHADER,VERT_SRC);
+  const frag=compileShader(gl,gl.FRAGMENT_SHADER,buildFragSrc(nSrc,nWall));
+  if(!vert||!frag)return false;
+  glProg=gl.createProgram();gl.attachShader(glProg,vert);gl.attachShader(glProg,frag);gl.linkProgram(glProg);
+  if(!gl.getProgramParameter(glProg,gl.LINK_STATUS)){console.error('Link error:',gl.getProgramInfoLog(glProg));return false;}
+  gl.useProgram(glProg);
+  const unis=['u_res','u_time','u_wavelength','u_brightness','u_bgLevel','u_gamma',
+              'u_damping','u_sharpness','u_colorMap','u_fringeStyle','u_superpos',
+              'u_invert','u_coh','u_nSrc','u_nWall','u_slitCount'];
+  for(const u of unis)glUniforms[u]=gl.getUniformLocation(glProg,u);
+  const NS=Math.max(nSrc,1), NW=Math.max(nWall,1);
+  for(let i=0;i<NS;i++){glUniforms['sA'+i]=gl.getUniformLocation(glProg,`u_srcA[${i}]`);glUniforms['sB'+i]=gl.getUniformLocation(glProg,`u_srcB[${i}]`);glUniforms['sC'+i]=gl.getUniformLocation(glProg,`u_srcC[${i}]`);}
+  for(let i=0;i<NW;i++){glUniforms['wA'+i]=gl.getUniformLocation(glProg,`u_wallA[${i}]`);for(let s=0;s<4;s++)glUniforms['sd'+(i*4+s)]=gl.getUniformLocation(glProg,`u_slitData[${i*4+s}]`);}
+  glCompiledForN=nSrc*100+nWall;
+  return true;
 }
 
 function initGL(){
   gl=glCanvas.getContext('webgl',{antialias:false,depth:false,alpha:false});
   if(!gl){console.error('No WebGL');return false;}
-  const vert=compileShader(gl,gl.VERTEX_SHADER,VERT_SRC);
-  const frag=compileShader(gl,gl.FRAGMENT_SHADER,FRAG_SRC);
-  if(!vert||!frag)return false;
-  glProg=gl.createProgram();gl.attachShader(glProg,vert);gl.attachShader(glProg,frag);gl.linkProgram(glProg);
-  if(!gl.getProgramParameter(glProg,gl.LINK_STATUS)){console.error('Link:',gl.getProgramInfoLog(glProg));return false;}
-  gl.useProgram(glProg);
+  // set up quad buffer once
   const buf=gl.createBuffer();gl.bindBuffer(gl.ARRAY_BUFFER,buf);
   gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]),gl.STATIC_DRAW);
-  const loc=gl.getAttribLocation(glProg,'a_pos');gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
-  const unis=['u_res','u_time','u_wavelength','u_brightness','u_bgLevel','u_gamma','u_damping','u_sharpness','u_colorMap','u_fringeStyle','u_superpos','u_invert','u_coh','u_nSrc','u_nHuyg','u_nWall'];
-  for(const u of unis)glUniforms[u]=gl.getUniformLocation(glProg,u);
-  for(let i=0;i<MAX_SRCS;i++){glUniforms['sA'+i]=gl.getUniformLocation(glProg,`u_srcA[${i}]`);glUniforms['sB'+i]=gl.getUniformLocation(glProg,`u_srcB[${i}]`);glUniforms['sC'+i]=gl.getUniformLocation(glProg,`u_srcC[${i}]`);}
-  for(let i=0;i<MAX_WALLS;i++){glUniforms['wA'+i]=gl.getUniformLocation(glProg,`u_wallA[${i}]`);glUniforms['sc'+i]=gl.getUniformLocation(glProg,`u_slitCount[${i}]`);for(let s=0;s<4;s++)glUniforms['sd'+(i*4+s)]=gl.getUniformLocation(glProg,`u_slitData[${i*4+s}]`);}
+  // defer program build to first render when we know source count
   return true;
 }
 
@@ -664,43 +749,59 @@ const CMAP_ID={spectral:0,mono:1,laser:2,red:3,blue:4,false:5,spectrum:6,fire:7,
 const FRINGE_ID={sharp:0,cos:1,binary:2,grating:3,gauss:4};
 const SUPERPOS_ID={phasor:0,incoherent:1,product:2,max:3};
 
-function uploadUniforms(eSrc){
+function uploadUniforms(eSrc, nSrc, nWall){
   const u=glUniforms;
   gl.uniform2f(u.u_res,W,H);gl.uniform1f(u.u_time,simTime);gl.uniform1f(u.u_wavelength,wavelength);
   gl.uniform1f(u.u_brightness,brightness);gl.uniform1f(u.u_bgLevel,bgLevel);gl.uniform1f(u.u_gamma,gamma);
   gl.uniform1f(u.u_damping,damping);gl.uniform1f(u.u_sharpness,sharpness);
-  gl.uniform1i(u.u_colorMap,CMAP_ID[colorMap]??1);gl.uniform1i(u.u_fringeStyle,FRINGE_ID[fringeStyle]??0);
-  gl.uniform1i(u.u_superpos,SUPERPOS_ID[superpos]??0);gl.uniform1i(u.u_invert,invertImg?1:0);
+  gl.uniform1f(u.u_colorMap,CMAP_ID[colorMap]??1);gl.uniform1f(u.u_fringeStyle,FRINGE_ID[fringeStyle]??0);
+  gl.uniform1f(u.u_superpos,SUPERPOS_ID[superpos]??0);gl.uniform1f(u.u_invert,invertImg?1.0:0.0);
   const ls=getLightSource(eSrc[0]||{lightSrc:'custom'});gl.uniform1f(u.u_coh,ls.coh);
-  const allSrc=[...eSrc,...huygSrcs];const nSrc=Math.min(allSrc.length,MAX_SRCS);
-  gl.uniform1i(u.u_nSrc,nSrc);gl.uniform1i(u.u_nHuyg,eSrc.length);
+  const allSrc=[...eSrc,...huygSrcs];
+  gl.uniform1f(u.u_nSrc,nSrc);
   for(let i=0;i<nSrc;i++){
     const s=allSrc[i];const isHuyg=(i>=eSrc.length);
-    const typeId=s.type==='point'?0:s.type==='plane'?1:2;
+    const typeId=s.type==='point'?0.0:s.type==='plane'?1.0:2.0;
     const sx=s.type==='point'||s.type==='huygen'?s.x:s.cx;
     const sy=s.type==='point'||s.type==='huygen'?s.y:s.cy;
     const lsSrc=getLightSource(s);const wlPx=lsSrc.id==='custom'?wavelength:lsSrc.wlPx;
     const sideV=s.type==='plane'?(s.side==='left'?1.0:s.side==='right'?-1.0:0.0):0.0;
-    const[r,gv,bv]=srcRGB(s);let wallIdx=-1;if(isHuyg)wallIdx=walls.indexOf(s.wallRef);
+    const[r,gv,bv]=srcRGB(s);let wallIdx=0.0;if(isHuyg)wallIdx=Math.max(0,walls.indexOf(s.wallRef));
     gl.uniform4f(u['sA'+i],typeId,sx,sy,s.amp);
     if(isHuyg){gl.uniform4f(u['sB'+i],s.phase*Math.PI/180,0.0,0.0,wallIdx);gl.uniform4f(u['sC'+i],r,gv,bv,s.fwd||1.0);}
     else{gl.uniform4f(u['sB'+i],s.phase*Math.PI/180,(s.angle||0)*Math.PI/180,sideV,wlPx);gl.uniform4f(u['sC'+i],r,gv,bv,lsSrc.wlNm);}
   }
-  const nWall=Math.min(walls.length,MAX_WALLS);gl.uniform1i(u.u_nWall,nWall);
+  gl.uniform1f(u.u_nWall,nWall);
   for(let wi=0;wi<nWall;wi++){
     const w=walls[wi];const L=Math.hypot(W,H);
     gl.uniform4f(u['wA'+wi],w.xFrac,w.angle*Math.PI/180,w.thick,w.enabled?1.0:0.0);
-    const nSlits=Math.min(w.slits.length,4);gl.uniform1i(u['sc'+wi],nSlits);
+    const nSlits=Math.min(w.slits.length,4);
+    const sc=[0,0,0,0];sc[wi]=nSlits;
     for(let si=0;si<4;si++){
       if(si<nSlits){const sl=w.slits[si];gl.uniform4f(u['sd'+(wi*4+si)],sl.pos,(sl.width/2)/L,0,0);}
       else{gl.uniform4f(u['sd'+(wi*4+si)],0,0,0,0);}
     }
+    // pack slit counts into vec4 u_slitCount
+    gl.uniform4f(u.u_slitCount,...Array.from({length:4},(_,i)=>walls[i]?Math.min((walls[i].slits||[]).length,4):0));
   }
+  if(nWall===0) gl.uniform4f(u.u_slitCount,0,0,0,0);
 }
 
 function renderGL(eSrc){
   if(!gl)return;
-  gl.viewport(0,0,W,H);uploadUniforms(eSrc);gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
+  const allSrc=[...eSrc,...huygSrcs];
+  const nSrc=Math.max(allSrc.length,1);
+  const nWall=Math.max(Math.min(walls.length,MAX_WALLS),1);
+  const key=nSrc*100+nWall;
+  if(key!==glCompiledForN){
+    // recompile shader with new constants baked in
+    if(!buildGLProgram(nSrc,nWall))return;
+    // re-bind quad
+    const loc=gl.getAttribLocation(glProg,'a_pos');gl.enableVertexAttribArray(loc);gl.vertexAttribPointer(loc,2,gl.FLOAT,false,0,0);
+  }
+  gl.viewport(0,0,W,H);
+  uploadUniforms(eSrc,nSrc,nWall);
+  gl.drawArrays(gl.TRIANGLE_STRIP,0,4);
 }
 
 // ─── SNAP ─────────────────────────────────────────────────────
